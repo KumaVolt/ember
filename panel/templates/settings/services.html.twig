@@ -11,6 +11,22 @@
         <a class="btn ghost" href="{{ path('settings') }}">Settings</a>
     </header>
 
+    {% set installable = grouped|reduce((carry, services) => carry + services|filter(s => s.installable)|length, 0) %}
+    {% if installable == 0 %}
+        <div class="card" style="border-color:var(--warn)">
+            <h2 style="color:var(--warn)">Nothing can be installed on this machine</h2>
+            <div class="body">
+                <p style="margin:0 0 .6rem">
+                    {{ grouped|first|first.unavailable_reason|default('No supported package manager was found.') }}
+                </p>
+                <p style="margin:0;color:var(--text-muted);font-size:.88rem">
+                    Everything below is still listed so you can see what a server would run.
+                    PHP versions are ember's own and install fine here.
+                </p>
+            </div>
+        </div>
+    {% endif %}
+
     <div class="card">
         <h2>PHP versions</h2>
         <div class="body" style="padding-bottom:.5rem">
@@ -87,12 +103,6 @@
                                     <span class="badge muted" title="{{ service.unavailable_reason|default('') }}">
                                         unavailable here
                                     </span>
-                                    {% if service.unavailable_reason is defined %}
-                                        <div style="color:var(--text-muted);font-size:.76rem;
-                                                    max-width:16rem;margin-top:.2rem;white-space:normal">
-                                            {{ service.unavailable_reason }}
-                                        </div>
-                                    {% endif %}
                                 {% endif %}
                             {% endif %}
                         </td>
