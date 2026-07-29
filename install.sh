@@ -92,9 +92,9 @@ NEEDED=""
 case "$PKG" in
   apt)
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
+    apt-get -oDPkg::Lock::Timeout=600 update -qq
     # shellcheck disable=SC2086
-    apt-get install -y -qq --no-install-recommends \
+    apt-get -oDPkg::Lock::Timeout=600 install -y -qq --no-install-recommends \
       ca-certificates libpam0g openssl certbot $NEEDED >/dev/null
     ;;
   dnf|yum)
@@ -308,14 +308,14 @@ if command -v nginx >/dev/null 2>&1; then
 else
   case "$PKG" in
     apt)
-      if apt-get install -y -qq --no-install-recommends nginx >/dev/null 2>&1; then
+      if apt-get -oDPkg::Lock::Timeout=600 install -y -qq --no-install-recommends nginx >/dev/null 2>&1; then
         say "installed nginx"
       else
         say "could not install nginx; customer sites will not be served"
       fi
       # Apache too, so a domain can be switched to it without installing
       # anything first. Only one of them listens on port 80 at a time.
-      if apt-get install -y -qq --no-install-recommends apache2 >/dev/null 2>&1; then
+      if apt-get -oDPkg::Lock::Timeout=600 install -y -qq --no-install-recommends apache2 >/dev/null 2>&1; then
         a2enmod proxy_fcgi rewrite >/dev/null 2>&1 || true
         say "installed apache (not started; nginx has port 80)"
       fi
@@ -375,7 +375,7 @@ if command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; then
 else
   case "$PKG" in
     apt)
-      if apt-get install -y -qq --no-install-recommends mariadb-server >/dev/null 2>&1; then
+      if apt-get -oDPkg::Lock::Timeout=600 install -y -qq --no-install-recommends mariadb-server >/dev/null 2>&1; then
         say "installed mariadb-server"
       else
         say "could not install mariadb-server; databases will be unavailable"

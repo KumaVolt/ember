@@ -383,7 +383,7 @@ Settings
 running, version — and installation through the distribution's package manager:
 MariaDB, PostgreSQL, Redis, nginx, Apache, certbot, Node.js, plus extra PHP
 versions for customer sites. Where Ember can install something but cannot yet *use* it — PostgreSQL, Redis
-and Node.js — the entry says so rather than implying more than exists. Node can be installed **by version** — 24, 22, 20, 18 — which pulls from
+and Node.js — the entry says so rather than implying more than exists. Node can be installed **by major version** — 24, 22, 20, 18 — which pulls from
 NodeSource, since the distribution package is whatever it ships (Debian 12 gives
 an end-of-life 18). Adding a third-party repository only happens when a version
 is asked for by name, never as a side effect of installing something else. One

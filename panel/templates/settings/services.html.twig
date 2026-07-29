@@ -115,11 +115,6 @@
                         <td>
                             <strong>{{ service.name }}</strong>
                             <div style="color:var(--text-muted);font-size:.82rem">{{ service.description }}</div>
-                            {% if service.note %}
-                                <div style="color:var(--warn);font-size:.8rem;margin-top:.2rem">
-                                    {{ service.note }}
-                                </div>
-                            {% endif %}
                         </td>
                         <td style="white-space:nowrap">
                             {% if service.running %}

@@ -32,9 +32,6 @@ pub struct Service {
     /// Why not, when it cannot. "Unavailable" on its own explains nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
-    /// Set when the component needs something said out loud before installing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
 }
 
 /// How to find, install and check one component.
@@ -51,7 +48,6 @@ struct Definition {
     unit: Option<&'static str>,
     /// Arguments that make the binary print its version.
     version_arg: Option<&'static str>,
-    note: Option<&'static str>,
 }
 
 const CATALOGUE: &[Definition] = &[
@@ -65,7 +61,6 @@ const CATALOGUE: &[Definition] = &[
         packages: (&["mariadb-server"], &["mariadb-server"]),
         unit: Some("mariadb"),
         version_arg: Some("--version"),
-        note: None,
     },
     Definition {
         id: "postgresql",
@@ -76,10 +71,6 @@ const CATALOGUE: &[Definition] = &[
         packages: (&["postgresql"], &["postgresql-server"]),
         unit: Some("postgresql"),
         version_arg: None,
-        note: Some(
-            "Ember can install PostgreSQL, but creating databases on it is not \
-             implemented yet — only MariaDB is wired up.",
-        ),
     },
     Definition {
         id: "redis",
@@ -90,10 +81,6 @@ const CATALOGUE: &[Definition] = &[
         packages: (&["redis-server"], &["redis"]),
         unit: Some("redis-server"),
         version_arg: Some("--version"),
-        note: Some(
-            "Ember can install Redis, but per-customer instances are not \
-             implemented yet.",
-        ),
     },
     Definition {
         id: "nodejs",
@@ -106,13 +93,6 @@ const CATALOGUE: &[Definition] = &[
         // Not a service: nothing runs in the background after installing.
         unit: None,
         version_arg: Some("--version"),
-        note: Some(
-            "Installs the version the distribution ships, which is usually well behind \
-             — Debian 12 gives Node 18, which is past end of life. For a current \
-             version add the NodeSource repository yourself; ember will not add a \
-             third-party repository to your machine on its own. Note also that ember \
-             does not host Node applications yet, so this is for build tooling.",
-        ),
     },
     Definition {
         id: "nginx",
@@ -124,7 +104,6 @@ const CATALOGUE: &[Definition] = &[
         packages: (&["nginx"], &["nginx"]),
         unit: Some("nginx"),
         version_arg: Some("-v"),
-        note: None,
     },
     Definition {
         id: "apache",
@@ -135,7 +114,6 @@ const CATALOGUE: &[Definition] = &[
         packages: (&["apache2"], &["httpd"]),
         unit: Some("apache2"),
         version_arg: Some("-v"),
-        note: None,
     },
     Definition {
         id: "certbot",
@@ -146,9 +124,23 @@ const CATALOGUE: &[Definition] = &[
         packages: (&["certbot"], &["certbot"]),
         unit: None,
         version_arg: Some("--version"),
-        note: None,
     },
 ];
+
+/// Serialises package operations.
+///
+/// dpkg takes a machine-wide lock, so two installs at once means the second
+/// fails with "unable to acquire the dpkg frontend lock". Queueing here makes a
+/// second request wait its turn instead of erroring — the operator asked for
+/// two things, not for one of them to fail.
+static PACKAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How long apt itself waits for a lock held by something else.
+///
+/// A freshly booted cloud server is often running unattended-upgrades, which
+/// holds the lock for minutes. Waiting is almost always right; failing is
+/// almost always premature.
+const DPKG_LOCK_WAIT: &str = "-oDPkg::Lock::Timeout=600";
 
 fn package_manager() -> Option<&'static str> {
     for (manager, path) in [
@@ -267,7 +259,6 @@ pub fn list() -> Vec<Service> {
                 } else {
                     None
                 },
-                note: definition.note.map(str::to_string),
             }
         })
         .collect()
@@ -298,11 +289,19 @@ pub fn install(cfg: &Config, id: &str) -> Result<String> {
         );
     }
 
+    // Held for the whole operation, so a second install waits rather than
+    // colliding on dpkg's lock. Poisoning only means a previous install
+    // panicked; the lock is still meaningful, so it is taken either way.
+    let _queued = PACKAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let output = match manager {
         "apt" => {
             let mut command = std::process::Command::new("apt-get");
             command
                 .env("DEBIAN_FRONTEND", "noninteractive")
+                .arg(DPKG_LOCK_WAIT)
                 .args(["install", "-y", "-qq", "--no-install-recommends"])
                 .args(packages);
             command.output()
@@ -316,11 +315,10 @@ pub fn install(cfg: &Config, id: &str) -> Result<String> {
     .with_context(|| format!("could not run {manager}"))?;
 
     if !output.status.success() {
-        let reason = String::from_utf8_lossy(&output.stderr);
         bail!(
             "installing {} failed: {}",
             definition.name,
-            reason.lines().last().unwrap_or("unknown error").trim()
+            explain_package_failure(&output.stderr, &output.stdout)
         );
     }
 
@@ -414,6 +412,10 @@ pub fn install_node(cfg: &Config, major: &str) -> Result<String> {
         bail!("installing a specific Node version is only implemented for apt systems");
     }
 
+    let _queued = PACKAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     // NodeSource ships a setup script per major that adds its repository and
     // key. Piping a remote script to a shell is what upstream documents; the
     // panel says so plainly rather than hiding it.
@@ -428,15 +430,12 @@ pub fn install_node(cfg: &Config, major: &str) -> Result<String> {
     if !setup.status.success() {
         bail!(
             "could not add the NodeSource repository: {}",
-            String::from_utf8_lossy(&setup.stderr)
-                .lines()
-                .last()
-                .unwrap_or("unknown error")
-                .trim()
+            explain_package_failure(&setup.stderr, &setup.stdout)
         );
     }
 
     let install = std::process::Command::new("apt-get")
+        .arg(DPKG_LOCK_WAIT)
         .args(["install", "-y", "-qq", "--no-install-recommends", "nodejs"])
         .env("DEBIAN_FRONTEND", "noninteractive")
         .output()
@@ -445,11 +444,7 @@ pub fn install_node(cfg: &Config, major: &str) -> Result<String> {
     if !install.status.success() {
         bail!(
             "installing Node {major} failed: {}",
-            String::from_utf8_lossy(&install.stderr)
-                .lines()
-                .last()
-                .unwrap_or("unknown error")
-                .trim()
+            explain_package_failure(&install.stderr, &install.stdout)
         );
     }
 
@@ -580,4 +575,40 @@ pub fn system_updates() -> (bool, String) {
         Some(_) => (false, "checking is only implemented for apt".to_string()),
         None => (false, "no supported package manager".to_string()),
     }
+}
+
+/// Turn a package manager's last line into something worth reading.
+///
+/// The raw output is usually the least useful line of several, and the lock
+/// message in particular tells the operator nothing they can act on.
+fn explain_package_failure(stderr: &[u8], stdout: &[u8]) -> String {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(stderr),
+        String::from_utf8_lossy(stdout)
+    );
+
+    if text.contains("dpkg frontend lock") || text.contains("Could not get lock") {
+        return "another package operation is still running on this server — \
+                usually unattended-upgrades on a freshly booted machine. It will \
+                free up on its own; try again in a few minutes."
+            .to_string();
+    }
+    if text.contains("Unable to locate package") {
+        return "the package is not in this server's sources — the distribution \
+                may not carry it, or `apt-get update` has never run."
+            .to_string();
+    }
+    if text.contains("Temporary failure resolving") || text.contains("Could not resolve") {
+        return "this server could not reach the package mirrors — check its DNS \
+                and outbound network."
+            .to_string();
+    }
+
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("unknown error")
+        .trim()
+        .to_string()
 }
