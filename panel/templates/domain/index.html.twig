@@ -74,7 +74,9 @@
                             </span>
                         {% endif %}
 
-                        <span class="tool disabled">{{ ui.icon('folder', 17) }} Files</span>
+                        <a class="tool" href="{{ path('domain_files', {id: domain.id}) }}">
+                            {{ ui.icon('folder', 17) }} Files
+                        </a>
                         <span class="tool disabled">{{ ui.icon('database', 17) }} Databases</span>
                         <span class="tool disabled">{{ ui.icon('code', 17) }} PHP</span>
                         <span class="tool disabled">{{ ui.icon('file-text', 17) }} Logs</span>

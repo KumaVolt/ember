@@ -1,0 +1,133 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Files: {{ domain.name }}{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Files</h1>
+            <p>
+                <strong>{{ domain.name }}</strong> ·
+                <span class="mono">{{ domain.root }}</span>
+            </p>
+        </div>
+        <a class="btn ghost" href="{{ path('domains') }}">Back to domains</a>
+    </header>
+
+    <div class="card">
+        <h2 style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+            {{ ui.icon('folder', 15) }}
+            {% for crumb in crumbs %}
+                {% if not loop.last %}
+                    <a href="{{ path('domain_files', {id: domain.id, path: crumb.path}) }}">{{ crumb.name }}</a>
+                    <span style="color:var(--border-strong)">/</span>
+                {% else %}
+                    <span>{{ crumb.name }}</span>
+                {% endif %}
+            {% endfor %}
+        </h2>
+
+        <div class="body" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-end;
+                                 border-bottom:1px solid var(--border);padding-bottom:1rem">
+            <form method="post" action="{{ path('domain_file_new', {id: domain.id}) }}"
+                  style="display:flex;gap:.4rem;align-items:flex-end">
+                <input type="hidden" name="path" value="{{ listing.path }}">
+                <div><label for="newfile">New file</label>
+                     <input id="newfile" name="name" placeholder="index.php" required style="margin:0;width:11rem"></div>
+                <button class="btn ghost" type="submit">{{ ui.icon('plus', 14) }} Create</button>
+            </form>
+
+            <form method="post" action="{{ path('domain_file_mkdir', {id: domain.id}) }}"
+                  style="display:flex;gap:.4rem;align-items:flex-end">
+                <input type="hidden" name="path" value="{{ listing.path }}">
+                <div><label for="newdir">New folder</label>
+                     <input id="newdir" name="name" placeholder="assets" required style="margin:0;width:11rem"></div>
+                <button class="btn ghost" type="submit">{{ ui.icon('plus', 14) }} Create</button>
+            </form>
+        </div>
+
+        <table>
+            <tr><th style="width:1.4rem"></th><th>Name</th><th>Size</th><th>Owner</th><th>Mode</th><th></th></tr>
+
+            {% if listing.parent is not null %}
+                <tr>
+                    <td>{{ ui.icon('folder', 15) }}</td>
+                    <td colspan="5">
+                        <a href="{{ path('domain_files', {id: domain.id, path: listing.parent}) }}">..</a>
+                    </td>
+                </tr>
+            {% endif %}
+
+            {% for entry in listing.entries %}
+                <tr data-filter="{{ entry.name|lower }}">
+                    <td style="color:var(--text-muted)">
+                        {{ ui.icon(entry.is_dir ? 'folder' : 'file-text', 15) }}
+                    </td>
+                    <td>
+                        {% if entry.is_dir %}
+                            <a href="{{ path('domain_files', {id: domain.id, path: entry.path}) }}">{{ entry.name }}</a>
+                        {% elseif entry.editable %}
+                            <a href="{{ path('domain_files', {id: domain.id, path: listing.path, edit: entry.path}) }}">{{ entry.name }}</a>
+                        {% else %}
+                            {{ entry.name }}
+                        {% endif %}
+                        {% if entry.is_symlink %}
+                            {# Named explicitly: a link may resolve outside the
+                               domain, in which case Ember refuses to follow it. #}
+                            <span class="badge muted" title="Symbolic link">link</span>
+                        {% elseif not entry.is_dir and not entry.editable %}
+                            <span class="badge muted" title="Binary or too large to edit">no editor</span>
+                        {% endif %}
+                    </td>
+                    <td class="mono">{{ entry.is_dir ? '—' : (entry.size < 1024
+                        ? entry.size ~ ' B' : (entry.size // 1024) ~ ' KB') }}</td>
+                    <td class="mono">{{ entry.owner }}</td>
+                    <td class="mono">{{ entry.mode }}</td>
+                    <td style="text-align:right;white-space:nowrap">
+                        {% if not entry.is_dir %}
+                            <a class="btn ghost sm"
+                               href="/api/v1/domains/{{ domain.id }}/files/download?path={{ entry.path|url_encode }}">Download</a>
+                        {% endif %}
+                        <form method="post" style="display:inline"
+                              action="{{ path('domain_file_rename', {id: domain.id}) }}"
+                              onsubmit="var n=prompt('Rename to', '{{ entry.name }}'); if(!n) return false; this.name.value=n;">
+                            <input type="hidden" name="path" value="{{ entry.path }}">
+                            <input type="hidden" name="name" value="">
+                            <button class="btn ghost sm" type="submit">Rename</button>
+                        </form>
+                        <form method="post" style="display:inline"
+                              action="{{ path('domain_file_delete', {id: domain.id}) }}"
+                              onsubmit="return confirm('Delete {{ entry.name }}{{ entry.is_dir ? ' and everything in it' }}?')">
+                            <input type="hidden" name="path" value="{{ entry.path }}">
+                            <button class="btn danger sm" type="submit">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+
+            {% if listing.entries is empty and listing.parent is null %}
+                <tr><td colspan="6" class="empty">This directory is empty.</td></tr>
+            {% endif %}
+        </table>
+    </div>
+
+    {% if editing %}
+        <div class="card">
+            <h2>{{ ui.icon('code', 15) }} {{ editing.path }}</h2>
+            <div class="body">
+                <form method="post" action="{{ path('domain_file_save', {id: domain.id}) }}">
+                    <input type="hidden" name="path" value="{{ editing.path }}">
+                    <textarea name="content" spellcheck="false" rows="22"
+                              style="width:100%;font-family:var(--mono);font-size:.82rem;
+                                     border:1px solid var(--border-strong);border-radius:var(--radius);
+                                     padding:.7rem;background:var(--surface-sunken);color:var(--text);
+                                     line-height:1.5;resize:vertical">{{ editing.content }}</textarea>
+                    <div style="margin-top:.75rem;display:flex;gap:.5rem">
+                        <button class="btn" type="submit">Save</button>
+                        <a class="btn ghost" href="{{ path('domain_files', {id: domain.id, path: listing.path}) }}">Close</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    {% endif %}
+{% endblock %}

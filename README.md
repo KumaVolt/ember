@@ -455,6 +455,33 @@ invisible until the day it expires, so it is stated rather than assumed.
 Use `--staging` while DNS is still settling: untrusted certificates, far looser
 rate limits.
 
+## File manager
+
+Each domain gets a browser for its own directory: navigate, edit text files,
+create, rename, delete, and download. Reached from the **Files** tool on a
+domain row.
+
+Containment is the whole job here, since every path comes from a browser. A
+resolved path must live under the domain root or the operation is refused, and
+three escapes are closed:
+
+- `..` and absolute paths are rejected before anything touches the disk.
+- The result is **canonicalised**, which resolves symlinks — so a link planted
+  inside `httpdocs` pointing at `/etc` resolves outside the root and fails.
+- Paths that do not exist yet have their **parent** canonicalised instead, so a
+  new file cannot be created through a link either.
+
+All of it is enforced in Rust. The panel never joins a path or touches the
+filesystem; it passes the operator's input to the control API and renders the
+answer. Files the panel writes are chowned to the customer, because a panel that
+leaves root-owned files in a customer's tree breaks their own site.
+
+Verified against a live container: traversal refused, reads *and* writes through
+a planted `/etc` symlink refused, and the domain root itself cannot be deleted.
+
+Binary files and anything over 2 MB are download-only rather than opened in the
+editor.
+
 ## The panel
 
 `panel/` in this repository is a Symfony 8.1 application. Its source is version
@@ -493,6 +520,8 @@ Ember serves whatever `public/index.php` it finds and needs no Rust changes.
 - **TLS for the panel itself.** Customer domains can get certificates, but the
   panel still serves plain HTTP on its own port, so its session cookie is
   `HttpOnly` + `SameSite=Lax` and not yet `Secure`.
+- **File uploads.** The worker parses form-encoded bodies but not multipart, so
+  uploading a file is not wired up yet.
 - **Successful issuance is untested.** The path to certbot is verified end to
   end — including a real rejection from Let's Encrypt staging — but obtaining an
   actual certificate needs a public domain pointing at the server.

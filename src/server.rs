@@ -23,7 +23,7 @@ use crate::{
     config::{self, Config},
     daemon::{self, State as ServiceState},
     esw::{self, EswProcess, PoolAddr},
-    pages, store, vhost,
+    files, pages, store, vhost,
     worker::WorkerPool,
 };
 
@@ -1034,6 +1034,124 @@ async fn resource_api(
                 StatusCode::CREATED,
                 serde_json::json!({ "domain": domain, "notes": warnings }),
             )
+        }
+
+        // --- files ---------------------------------------------------------
+        // Every path is checked against the domain root inside files.rs; this
+        // layer only routes and never joins paths itself.
+        (_, r) if r.starts_with("/api/v1/domains/") && r.contains("/files") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/domains/")
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .parse()
+                .unwrap_or(-1);
+
+            let conn = store::open()?;
+            let Some(domain) = store::find_domain(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain")));
+            };
+
+            let action = r.rsplit('/').next().unwrap_or("");
+            let query_path = request
+                .uri()
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "path")
+                .map(|(_, v)| percent_decode(v))
+                .unwrap_or_else(|| "/".to_string());
+
+            match (method, action) {
+                (&Method::GET, "files") => match files::list(&domain, &query_path) {
+                    Ok(listing) => api_json(StatusCode::OK, serde_json::json!(listing)),
+                    Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                },
+
+                (&Method::GET, "read") => match files::read(&domain, &query_path) {
+                    Ok(content) => api_json(
+                        StatusCode::OK,
+                        serde_json::json!({ "path": query_path, "content": content }),
+                    ),
+                    Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                },
+
+                // Raw bytes, so the browser can save the file as-is.
+                (&Method::GET, "download") => match files::read_bytes(&domain, &query_path) {
+                    Ok((name, bytes)) => (
+                        StatusCode::OK,
+                        [
+                            (
+                                header::CONTENT_TYPE,
+                                HeaderValue::from_static("application/octet-stream"),
+                            ),
+                            (
+                                header::CONTENT_DISPOSITION,
+                                HeaderValue::from_str(&format!(
+                                    "attachment; filename=\"{}\"",
+                                    name.replace('"', "")
+                                ))
+                                .unwrap_or(HeaderValue::from_static("attachment")),
+                            ),
+                        ],
+                        bytes,
+                    )
+                        .into_response(),
+                    Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                },
+
+                (&Method::POST, "write") => {
+                    let body = json_body(request).await?;
+                    let path = field(&body, "path").unwrap_or("").to_string();
+                    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    match files::write(&cfg, &domain, &path, content) {
+                        Ok(saved) => {
+                            api_json(StatusCode::OK, serde_json::json!({ "saved": saved }))
+                        }
+                        Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                    }
+                }
+
+                (&Method::POST, "mkdir") => {
+                    let body = json_body(request).await?;
+                    let path = field(&body, "path").unwrap_or("").to_string();
+                    match files::mkdir(&cfg, &domain, &path) {
+                        Ok(made) => {
+                            api_json(StatusCode::OK, serde_json::json!({ "created": made }))
+                        }
+                        Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                    }
+                }
+
+                (&Method::POST, "rename") => {
+                    let body = json_body(request).await?;
+                    let from = field(&body, "path").unwrap_or("").to_string();
+                    let to = field(&body, "to").unwrap_or("").to_string();
+                    match files::rename(&cfg, &domain, &from, &to) {
+                        Ok(moved) => {
+                            api_json(StatusCode::OK, serde_json::json!({ "renamed": moved }))
+                        }
+                        Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                    }
+                }
+
+                (&Method::DELETE, "files") => match files::delete(&cfg, &domain, &query_path) {
+                    Ok(removed) => {
+                        esw::log_line(&format!(
+                            "[{}] {actor} deleted {} in {}",
+                            daemon::now_secs(),
+                            removed,
+                            domain.name
+                        ));
+                        api_json(StatusCode::OK, serde_json::json!({ "removed": removed }))
+                    }
+                    Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                },
+
+                _ => api_error(StatusCode::NOT_FOUND, "unknown file action"),
+            }
         }
 
         // --- certificates --------------------------------------------------

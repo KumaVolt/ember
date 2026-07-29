@@ -13,6 +13,7 @@ mod cert;
 mod config;
 mod daemon;
 mod esw;
+mod files;
 mod pages;
 mod pam;
 mod server;
