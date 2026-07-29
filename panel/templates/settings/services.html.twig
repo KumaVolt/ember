@@ -11,6 +11,49 @@
         <a class="btn ghost" href="{{ path('settings') }}">Settings</a>
     </header>
 
+    {% if jobs is not empty %}
+        <div class="card" {{ busy ? 'id="tasks"' }}>
+            <h2>
+                Tasks
+                {% if busy %}
+                    <span class="badge warn" style="margin-left:.4rem">working</span>
+                {% endif %}
+                {% if lock_held_by %}
+                    <span class="badge muted" style="margin-left:.3rem">
+                        package manager busy: {{ lock_held_by }}
+                    </span>
+                {% endif %}
+            </h2>
+            <table>
+                {% for job in jobs|slice(0, 8) %}
+                    <tr>
+                        <td style="width:1%;white-space:nowrap">
+                            {% if job.status == 'done' %}
+                                <span class="badge ok">done</span>
+                            {% elseif job.status == 'failed' %}
+                                <span class="badge warn">failed</span>
+                            {% elseif job.status == 'running' %}
+                                <span class="badge warn"><span class="dot"></span>running</span>
+                            {% elseif job.status == 'waiting' %}
+                                <span class="badge muted">waiting</span>
+                            {% else %}
+                                <span class="badge muted">queued</span>
+                            {% endif %}
+                        </td>
+                        <td><strong>{{ job.label }}</strong></td>
+                        <td style="color:var(--text-muted);font-size:.85rem">{{ job.message }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        {% if busy %}
+            {# Only while something is in flight, so a settled page does not
+               reload itself forever. #}
+            <script>setTimeout(() => location.reload(), 3000);</script>
+        {% endif %}
+    {% endif %}
+
     {% set installable = grouped|reduce((carry, services) => carry + services|filter(s => s.installable)|length, 0) %}
     {% if installable == 0 %}
         <div class="card" style="border-color:var(--warn)">

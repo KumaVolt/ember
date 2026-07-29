@@ -81,11 +81,16 @@ final class SettingsController extends AbstractController
             $grouped[$service['category']][] = $service;
         }
 
+        $queue = $this->api->get('/api/v1/jobs') ?? [];
+
         return $this->render('settings/services.html.twig', [
             'grouped' => $grouped,
             'engines' => $result['engines'] ?? [],
             'node_versions' => $result['node_versions'] ?? [],
             'node_installed' => $result['node_installed'] ?? null,
+            'jobs' => $queue['jobs'] ?? [],
+            'busy' => $queue['busy'] ?? false,
+            'lock_held_by' => $queue['package_lock_held_by'] ?? null,
         ]);
     }
 
@@ -106,7 +111,12 @@ final class SettingsController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
         } else {
-            $this->addFlash('ok', htmlspecialchars($result['result'] ?? $result['installed'] ?? 'Installed.'));
+            // The work is queued, not done — say that rather than implying it
+            // finished.
+            $this->addFlash('ok', sprintf(
+                '<strong>%s</strong> queued. It runs in the background; this page follows along.',
+                htmlspecialchars($result['job']['label'] ?? 'Install'),
+            ));
         }
 
         return $this->redirectToRoute('settings_services');

@@ -24,7 +24,7 @@ use crate::{
     daemon::{self, State as ServiceState},
     database,
     esw::{self, EswProcess, PoolAddr},
-    files, pages, php, secrets, services, store, system, vhost,
+    files, jobs, pages, php, secrets, services, store, system, vhost,
     worker::WorkerPool,
 };
 
@@ -767,7 +767,7 @@ async fn control_api(inner: &Inner, request: Request, path: &str, user: &str) ->
                 "/api/v1/branding", "/api/v1/databases",
                 "/api/v1/domains/{id}/certificate",
                 "/api/v1/certificates/renew", "/api/v1/services",
-                "/api/v1/system", "/api/v1/updates",
+                "/api/v1/system", "/api/v1/updates", "/api/v1/jobs",
             ],
         }),
         "/api/v1/status" => serde_json::json!({
@@ -1224,39 +1224,45 @@ async fn resource_api(
                 ));
             }
 
-            // A named Node major comes from NodeSource, which the plain
-            // package install deliberately does not touch.
-            if let Some(major) = field(&body, "node") {
-                let major = major.to_string();
-                let cfg = cfg.clone();
-                return Ok(Some(
-                    match tokio::task::spawn_blocking(move || services::install_node(&cfg, &major))
-                        .await?
-                    {
-                        Ok(message) => {
-                            esw::log_line(&format!("[{}] {actor}: {message}", daemon::now_secs()));
-                            api_json(StatusCode::OK, serde_json::json!({ "result": message }))
-                        }
-                        Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
-                    },
-                ));
-            }
-
-            let Some(id) = field(&body, "id").map(str::to_string) else {
+            // Queued rather than run inline: an install takes minutes, and
+            // holding the request open for it tells the operator nothing about
+            // whether it is working or stuck.
+            let work = if let Some(major) = field(&body, "node") {
+                if !services::AVAILABLE_NODE
+                    .iter()
+                    .any(|(known, _)| *known == major)
+                {
+                    return Ok(Some(api_error(
+                        StatusCode::BAD_REQUEST,
+                        "unknown Node version",
+                    )));
+                }
+                jobs::Work::InstallNode(major.to_string())
+            } else if let Some(id) = field(&body, "id") {
+                jobs::Work::InstallService(id.to_string())
+            } else {
                 return Ok(Some(api_error(StatusCode::BAD_REQUEST, "id is required")));
             };
 
-            let cfg = cfg.clone();
-            // Package installs take minutes; a blocking task keeps the runtime
-            // free to serve the rest of the panel meanwhile.
-            match tokio::task::spawn_blocking(move || services::install(&cfg, &id)).await? {
-                Ok(message) => {
-                    esw::log_line(&format!("[{}] {actor}: {message}", daemon::now_secs()));
-                    api_json(StatusCode::OK, serde_json::json!({ "result": message }))
-                }
-                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
-            }
+            let job = jobs::submit(&cfg, work);
+            esw::log_line(&format!(
+                "[{}] {actor} queued job {}: {}",
+                daemon::now_secs(),
+                job.id,
+                job.label
+            ));
+            api_json(StatusCode::ACCEPTED, serde_json::json!({ "job": job }))
         }
+
+        // What the queue is doing. Polled by the UI while anything is in flight.
+        (&Method::GET, "/api/v1/jobs") => api_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "jobs": jobs::list(&cfg),
+                "busy": jobs::busy(&cfg),
+                "package_lock_held_by": jobs::package_lock_holder(),
+            }),
+        ),
 
         (&Method::GET, "/api/v1/system") => api_json(
             StatusCode::OK,

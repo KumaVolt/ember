@@ -15,6 +15,7 @@ mod daemon;
 mod database;
 mod esw;
 mod files;
+mod jobs;
 mod pages;
 mod pam;
 mod php;
