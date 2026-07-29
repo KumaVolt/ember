@@ -37,6 +37,9 @@ final class DomainController extends AbstractController
     {
         return $this->render('domain/new.html.twig', [
             'customers' => ($this->api->get('/api/v1/customers')['customers'] ?? []),
+            // The database option is only offered when there is a server to
+            // create one on.
+            'server' => ($this->api->get('/api/v1/databases')['server'] ?? ['available' => false]),
         ]);
     }
 
@@ -64,7 +67,58 @@ final class DomainController extends AbstractController
         }
         $this->addFlash('ok', $message);
 
+        if ($request->request->getBoolean('with_database')) {
+            $this->createDatabaseFor(
+                $result['domain'],
+                trim((string) $request->request->get('database_name')),
+            );
+        }
+
         return $this->redirectToRoute('domains');
+    }
+
+    /**
+     * Create a database alongside a freshly made domain.
+     *
+     * Reported separately on purpose: the domain exists either way, and a
+     * failure here should say so rather than making it look as though the
+     * domain failed too.
+     *
+     * @param array<string, mixed> $domain
+     */
+    private function createDatabaseFor(array $domain, string $name): void
+    {
+        if ('' === $name) {
+            // The first label of the domain, which is what someone would have
+            // typed anyway: acme.test becomes acme.
+            $name = preg_replace('/[^a-z0-9_]/', '_', strtolower(explode('.', $domain['name'])[0])) ?? 'site';
+        }
+
+        $result = $this->api->post('/api/v1/databases', [
+            'domain_id' => $domain['id'],
+            'name' => $name,
+            'engine' => 'mariadb',
+        ]);
+
+        if (null === $result || isset($result['error'])) {
+            $this->addFlash('error', sprintf(
+                'The domain was created, but its database was not: %s',
+                htmlspecialchars($result['error'] ?? 'Ember did not respond.'),
+            ));
+
+            return;
+        }
+
+        $this->addFlash('ok', sprintf(
+            'Database <strong>%s</strong> created for this site.<ul>'
+            .'<li>User: <code>%s</code></li>'
+            .'<li>Password: <code>%s</code></li>'
+            .'<li>Host: <code>127.0.0.1</code> or <code>localhost</code></li>'
+            .'</ul>Copy the password now — it is not stored and cannot be shown again.',
+            htmlspecialchars($result['database']['name']),
+            htmlspecialchars($result['database']['db_user']),
+            htmlspecialchars($result['password']),
+        ));
     }
 
     /**

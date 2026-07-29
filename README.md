@@ -608,6 +608,12 @@ actually reach, rather than the panel asserting it.
 Names are prefixed with the owner, so `wordpress` becomes `acme_wordpress` and
 two customers can both use the name they want.
 
+Adding a domain offers to create a database for it in the same step, named from
+the domain unless you say otherwise. It is an option rather than automatic — a
+static site does not need one — and opting out creates nothing. A failure there
+is reported separately, because the domain exists either way and should not look
+as though it failed too.
+
 A database can be **attached to a domain** or belong to the customer generally.
 The Databases tool on a domain row opens that site's databases and creates new
 ones in place, needing only a name — the owner follows from the domain. Removing

@@ -45,7 +45,44 @@
                         </div>
                     </div>
 
-                    <button class="btn" type="submit">{{ ui.icon('plus', 15) }} Create domain</button>
+                    {% if server.available|default(false) %}
+                        <div style="border-top:1px solid var(--border);padding-top:1rem;margin-top:.4rem">
+                            <label style="display:flex;gap:.5rem;align-items:flex-start;font-weight:400">
+                                <input type="checkbox" name="with_database" value="1" checked
+                                       style="width:auto;margin:.25rem 0 0"
+                                       onchange="document.getElementById('dbname-row').hidden = !this.checked">
+                                <span>
+                                    Create a database for this site
+                                    <br><span style="color:var(--text-muted);font-size:.78rem">
+                                        A database and a user that can reach only it. The password is
+                                        shown once after creation.
+                                    </span>
+                                </span>
+                            </label>
+
+                            <div id="dbname-row" style="margin-top:.7rem;max-width:18rem">
+                                <label for="database_name">Database name
+                                    <span style="color:var(--text-muted);font-weight:400">— optional</span>
+                                </label>
+                                <input id="database_name" name="database_name"
+                                       placeholder="taken from the domain name"
+                                       autocapitalize="none" spellcheck="false">
+                                <p style="color:var(--text-muted);font-size:.76rem;margin:-.7rem 0 0">
+                                    Prefixed with the customer's name, so it becomes
+                                    <code class="mono">customer_name</code>.
+                                </p>
+                            </div>
+                        </div>
+                    {% else %}
+                        <p style="color:var(--text-muted);font-size:.8rem;margin:0 0 1rem">
+                            No database server is available, so no database will be created. Install
+                            MariaDB from <a href="{{ path('settings_services') }}">Settings → Services</a>.
+                        </p>
+                    {% endif %}
+
+                    <button class="btn" type="submit" style="margin-top:1rem">
+                        {{ ui.icon('plus', 15) }} Create domain
+                    </button>
                 </form>
             {% endif %}
         </div>
