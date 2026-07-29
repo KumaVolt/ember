@@ -22,6 +22,7 @@ use crate::{
     auth, cert,
     config::{self, Config},
     daemon::{self, State as ServiceState},
+    database,
     esw::{self, EswProcess, PoolAddr},
     files, pages, store, vhost,
     worker::WorkerPool,
@@ -743,7 +744,8 @@ async fn control_api(inner: &Inner, request: Request, path: &str, user: &str) ->
             "endpoints": [
                 "/api/v1/status", "/api/v1/whoami", "/api/v1/users",
                 "/api/v1/summary", "/api/v1/customers", "/api/v1/domains",
-                "/api/v1/branding", "/api/v1/domains/{id}/certificate",
+                "/api/v1/branding", "/api/v1/databases",
+                "/api/v1/domains/{id}/certificate",
                 "/api/v1/certificates/renew",
             ],
         }),
@@ -1130,6 +1132,224 @@ async fn resource_api(
             api_json(
                 StatusCode::CREATED,
                 serde_json::json!({ "domain": domain, "notes": warnings }),
+            )
+        }
+
+        // --- databases -----------------------------------------------------
+        (&Method::GET, "/api/v1/databases") => {
+            let customer_id = request
+                .uri()
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "customer_id")
+                .and_then(|(_, v)| v.parse::<i64>().ok());
+
+            let conn = store::open()?;
+            let mut records = store::list_databases(&conn, customer_id)?;
+
+            // Sizes come from the server, not the record, so they cannot go
+            // stale. Skipped entirely when the server is down.
+            let (up, status) = database::server_status();
+            if up {
+                for record in &mut records {
+                    record.size_bytes = database::size_bytes(&record.name);
+                }
+            }
+
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "databases": records,
+                    "server": { "available": up, "status": status },
+                }),
+            )
+        }
+
+        (&Method::POST, "/api/v1/databases") => {
+            let body = json_body(request).await?;
+            let engine = match database::Engine::parse(field(&body, "engine").unwrap_or("mariadb"))
+            {
+                Ok(engine) => engine,
+                Err(err) => return Ok(Some(api_error(StatusCode::BAD_REQUEST, &err.to_string()))),
+            };
+            let Some(raw_name) = field(&body, "name") else {
+                return Ok(Some(api_error(StatusCode::BAD_REQUEST, "name is required")));
+            };
+            let Some(customer_id) = body.get("customer_id").and_then(|v| v.as_i64()) else {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "customer_id is required",
+                )));
+            };
+
+            let conn = store::open()?;
+            let Some(customer) = store::find_customer(&conn, customer_id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such customer")));
+            };
+
+            // Prefixed with the owner so two customers can both want the name
+            // "wordpress", and so ownership is legible on the server itself.
+            let name = database::qualified_name(&customer.username, raw_name);
+            let user = field(&body, "user")
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| {
+                    database::qualified_name(&customer.username, raw_name)
+                        .chars()
+                        .take(database::MAX_DB_USER)
+                        .collect()
+                });
+
+            let password = match field(&body, "password") {
+                Some(given) => given.to_string(),
+                None => match database::generate_password() {
+                    Ok(generated) => generated,
+                    Err(err) => {
+                        return Ok(Some(api_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &err.to_string(),
+                        )));
+                    }
+                },
+            };
+
+            if let Err(err) = database::create(&cfg, engine, &name, &user, &password) {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{err:#}"),
+                )));
+            }
+
+            let record = match store::create_database_record(
+                &conn,
+                customer_id,
+                engine.as_str(),
+                &name,
+                &user,
+            ) {
+                Ok(record) => record,
+                Err(err) => {
+                    // The record is the only thing that knows this database
+                    // belongs to us, so a failure here must not leave one
+                    // orphaned on the server.
+                    let _ = database::drop(&cfg, engine, &name, &user);
+                    return Ok(Some(api_error(StatusCode::BAD_REQUEST, &err.to_string())));
+                }
+            };
+
+            esw::log_line(&format!(
+                "[{}] {actor} created database {name} for {}",
+                daemon::now_secs(),
+                customer.username
+            ));
+
+            // The password is returned exactly once: it is not stored, and it
+            // cannot be recovered afterwards, only reset.
+            api_json(
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "database": record,
+                    "password": password,
+                    "note": "this password is shown once and is not stored",
+                }),
+            )
+        }
+
+        (&Method::POST, r) if r.starts_with("/api/v1/databases/") && r.ends_with("/password") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/databases/")
+                .trim_end_matches("/password")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+
+            let conn = store::open()?;
+            let Some(record) = store::find_database(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such database")));
+            };
+            let engine = database::Engine::parse(&record.engine)?;
+
+            let body = json_body(request).await.unwrap_or(serde_json::json!({}));
+            let password = match field(&body, "password") {
+                Some(given) => given.to_string(),
+                None => database::generate_password()?,
+            };
+
+            match database::set_password(&cfg, engine, &record.db_user, &password) {
+                Ok(()) => api_json(
+                    StatusCode::OK,
+                    serde_json::json!({ "user": record.db_user, "password": password }),
+                ),
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
+        }
+
+        // What this user can actually reach, asked of the server rather than
+        // asserted by the panel.
+        (&Method::GET, r) if r.starts_with("/api/v1/databases/") && r.ends_with("/grants") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/databases/")
+                .trim_end_matches("/grants")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+            let conn = store::open()?;
+            match store::find_database(&conn, id)? {
+                Some(record) => api_json(
+                    StatusCode::OK,
+                    serde_json::json!({
+                        "user": record.db_user,
+                        "grants": database::grants_for(&record.db_user).unwrap_or_default(),
+                    }),
+                ),
+                None => api_error(StatusCode::NOT_FOUND, "no such database"),
+            }
+        }
+
+        (&Method::DELETE, r) if path_id(r, "/api/v1/databases").is_some() => {
+            let id = path_id(r, "/api/v1/databases").unwrap();
+
+            let confirm = request
+                .uri()
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "confirm")
+                .map(|(_, v)| percent_decode(v));
+
+            let conn = store::open()?;
+            let Some(record) = store::find_database(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such database")));
+            };
+
+            // Dropping a database destroys data with no undo, so the caller
+            // names it — the same rule as removing a domain.
+            if confirm.as_deref() != Some(record.name.as_str()) {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("confirmation required: send confirm={}", record.name),
+                )));
+            }
+
+            let engine = database::Engine::parse(&record.engine)?;
+            if let Err(err) = database::drop(&cfg, engine, &record.name, &record.db_user) {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{err:#}"),
+                )));
+            }
+            store::delete_database_record(&conn, id)?;
+
+            esw::log_line(&format!(
+                "[{}] {actor} dropped database {}",
+                daemon::now_secs(),
+                record.name
+            ));
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({ "removed": record.name }),
             )
         }
 

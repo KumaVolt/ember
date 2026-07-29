@@ -12,6 +12,7 @@ mod auth;
 mod cert;
 mod config;
 mod daemon;
+mod database;
 mod esw;
 mod files;
 mod pages;

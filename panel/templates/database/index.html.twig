@@ -1,0 +1,89 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Databases{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Databases</h1>
+            <p>One server, scoped per customer. Each user reaches only its own database.</p>
+        </div>
+        {% if server.available %}
+            <a class="btn" href="{{ path('database_new') }}">{{ ui.icon('plus', 15) }} Add database</a>
+        {% endif %}
+    </header>
+
+    {% if not server.available %}
+        <div class="card" style="border-color:var(--warn)">
+            <h2 style="color:var(--warn)">No database server</h2>
+            <div class="body">
+                <p style="margin:0 0 .6rem">{{ server.status }}</p>
+                <p style="margin:0;color:var(--text-muted);font-size:.88rem">
+                    Install MariaDB and start it, then reload:
+                    <code class="mono">apt install mariadb-server &amp;&amp; systemctl enable --now mariadb</code>
+                </p>
+            </div>
+        </div>
+    {% endif %}
+
+    <div class="card">
+        <h2>
+            Databases
+            {% if server.available %}
+                <span class="badge ok" style="margin-left:.4rem">{{ server.status }}</span>
+            {% endif %}
+        </h2>
+
+        {% if databases is empty %}
+            <div class="empty">
+                <p>No databases yet.</p>
+                {% if server.available %}
+                    <a class="btn" href="{{ path('database_new') }}">{{ ui.icon('plus', 15) }} Add your first database</a>
+                {% endif %}
+            </div>
+        {% else %}
+            <table>
+                <tr><th>Database</th><th>Owner</th><th>User</th><th>Engine</th><th>Size</th><th></th></tr>
+                {% for database in databases %}
+                    <tr data-filter="{{ (database.name ~ ' ' ~ database.customer_username)|lower }}">
+                        <td><strong class="mono">{{ database.name }}</strong></td>
+                        <td><a href="{{ path('customer_show', {id: database.customer_id}) }}">{{ database.customer_username }}</a></td>
+                        <td class="mono">{{ database.db_user }}</td>
+                        <td><span class="badge muted">{{ database.engine }}</span></td>
+                        <td class="mono">
+                            {{ database.size_bytes is not null
+                                ? (database.size_bytes < 1024 ? database.size_bytes ~ ' B'
+                                   : (database.size_bytes // 1024) ~ ' KB') : '—' }}
+                        </td>
+                        <td style="text-align:right;white-space:nowrap">
+                            <form method="post" style="display:inline"
+                                  action="{{ path('database_password', {id: database.id}) }}"
+                                  onsubmit="return confirm('Reset the password for {{ database.db_user }}? Anything using the old one stops connecting.')">
+                                <button class="btn ghost sm" type="submit">Reset password</button>
+                            </form>
+                            <a class="btn danger sm" href="{{ path('database_delete_confirm', {id: database.id}) }}">Drop</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+
+    {% if databases is not empty %}
+        <div class="card">
+            <h2>Connecting</h2>
+            <div class="body" style="color:var(--text-muted);font-size:.9rem">
+                <p style="margin:0 0 .5rem">
+                    Applications connect over <code class="mono">localhost</code> as the user
+                    shown above. Each user is granted rights on its own database only, so it
+                    cannot see or reach anyone else's — enforced by the database server, not
+                    by this panel.
+                </p>
+                <p style="margin:0">
+                    Passwords are shown once at creation and are not stored. If one is lost,
+                    reset it.
+                </p>
+            </div>
+        </div>
+    {% endif %}
+{% endblock %}

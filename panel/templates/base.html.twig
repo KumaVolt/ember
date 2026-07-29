@@ -284,7 +284,9 @@
             </a>
             {# Shown but disabled: the navigation states the intended shape of
                the product without pretending these pages exist. #}
-            <a class="disabled">{{ ui.icon('database') }} Databases <span class="soon">soon</span></a>
+            <a href="{{ path('databases') }}" class="{{ route starts with 'database' ? 'active' }}">
+                {{ ui.icon('database') }} Databases
+            </a>
             <a class="disabled">{{ ui.icon('mail') }} Mail <span class="soon">soon</span></a>
             <a class="disabled">{{ ui.icon('folder') }} Files <span class="soon">soon</span></a>
 

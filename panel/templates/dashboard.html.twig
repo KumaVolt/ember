@@ -23,6 +23,11 @@
             <div class="sub">each a system account</div>
         </div>
         <div class="tile">
+            <div class="label">Databases</div>
+            <div class="value">{{ summary.databases|default(0) }}</div>
+            <div class="sub">one user each, scoped</div>
+        </div>
+        <div class="tile">
             <div class="label">Service</div>
             <div class="value" style="font-size:1.1rem">
                 {% if status %}<span class="badge ok">{{ status.status }}</span>

@@ -1,0 +1,37 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Drop {{ database.name }}{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Drop {{ database.name }}</h1>
+            <p>This cannot be undone.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('databases') }}">Cancel</a>
+    </header>
+
+    <div class="card" style="max-width:38rem;border-color:var(--danger-border)">
+        <h2 style="color:var(--danger)">What this deletes</h2>
+        <div class="body">
+            <ul style="margin:0 0 1.1rem;padding-left:1.1rem;color:var(--text-muted);font-size:.9rem">
+                <li>The database <code class="mono">{{ database.name }}</code> and
+                    <strong>every table and row in it</strong></li>
+                <li>The user <code class="mono">{{ database.db_user }}</code></li>
+                <li>Anything still connecting with those credentials stops working</li>
+            </ul>
+            <p style="margin:0 0 1.1rem;font-size:.9rem">
+                Take a backup first if you might need this data.
+            </p>
+
+            <form method="post" action="{{ path('database_delete', {id: database.id}) }}">
+                <label for="confirm">Type <strong class="mono">{{ database.name }}</strong> to confirm</label>
+                <input id="confirm" name="confirm" autocomplete="off" autocapitalize="none"
+                       spellcheck="false" placeholder="{{ database.name }}" required autofocus>
+                <button class="btn danger" type="submit">
+                    {{ ui.icon('trash', 15) }} Drop this database permanently
+                </button>
+            </form>
+        </div>
+    </div>
+{% endblock %}

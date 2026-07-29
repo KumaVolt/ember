@@ -297,6 +297,45 @@ if id ember-esw >/dev/null 2>&1; then
 fi
 chmod -R u+rwX,g+rwX "$PANEL_DIR/var" 2>/dev/null || true
 
+# --- database server --------------------------------------------------------
+
+step "Setting up the database server"
+
+# MariaDB hosts customer databases. Isolation is its own grant system: a user
+# is granted rights on one database and cannot see any other, which holds even
+# for a customer connecting directly with a MySQL client.
+if command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; then
+  say "a mariadb client is already present"
+else
+  case "$PKG" in
+    apt)
+      if apt-get install -y -qq --no-install-recommends mariadb-server >/dev/null 2>&1; then
+        say "installed mariadb-server"
+      else
+        say "could not install mariadb-server; databases will be unavailable"
+      fi
+      ;;
+    dnf|yum)
+      if $PKG install -y -q mariadb-server >/dev/null 2>&1; then
+        say "installed mariadb-server"
+      else
+        say "could not install mariadb-server; databases will be unavailable"
+      fi
+      ;;
+    *)
+      say "unknown package manager; install mariadb-server yourself for databases"
+      ;;
+  esac
+fi
+
+if command -v systemctl >/dev/null 2>&1 && command -v mariadbd >/dev/null 2>&1; then
+  if systemctl enable --now mariadb >/dev/null 2>&1; then
+    say "mariadb is running"
+  else
+    say "could not start mariadb; check: systemctl status mariadb"
+  fi
+fi
+
 # --- certificate renewal ----------------------------------------------------
 
 step "Setting up certificate renewal"

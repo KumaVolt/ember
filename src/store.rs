@@ -104,7 +104,18 @@ fn migrate(conn: &Connection) -> Result<()> {
             created_at  INTEGER NOT NULL
          );
 
-         CREATE INDEX IF NOT EXISTS domains_by_customer ON domains(customer_id);",
+         CREATE TABLE IF NOT EXISTS databases (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            engine      TEXT    NOT NULL DEFAULT 'mariadb',
+            name        TEXT    NOT NULL,
+            db_user     TEXT    NOT NULL,
+            created_at  INTEGER NOT NULL,
+            UNIQUE (engine, name)
+         );
+
+         CREATE INDEX IF NOT EXISTS domains_by_customer ON domains(customer_id);
+         CREATE INDEX IF NOT EXISTS databases_by_customer ON databases(customer_id);",
     )
     .context("could not apply the database schema")?;
     Ok(())
@@ -226,6 +237,17 @@ pub fn delete_customer(conn: &Connection, id: i64) -> Result<Customer> {
             customer.domain_count
         );
     }
+    let databases: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM databases WHERE customer_id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if databases > 0 {
+        bail!(
+            "{} still has {databases} database(s) — remove them first",
+            customer.username
+        );
+    }
     conn.execute("DELETE FROM customers WHERE id = ?1", params![id])?;
     Ok(customer)
 }
@@ -323,5 +345,90 @@ pub fn delete_domain(conn: &Connection, id: i64) -> Result<Domain> {
 pub fn summary(conn: &Connection) -> Result<serde_json::Value> {
     let customers: i64 = conn.query_row("SELECT COUNT(*) FROM customers", [], |r| r.get(0))?;
     let domains: i64 = conn.query_row("SELECT COUNT(*) FROM domains", [], |r| r.get(0))?;
-    Ok(serde_json::json!({ "customers": customers, "domains": domains }))
+    let databases: i64 = conn.query_row("SELECT COUNT(*) FROM databases", [], |r| r.get(0))?;
+    Ok(serde_json::json!({
+        "customers": customers,
+        "domains": domains,
+        "databases": databases,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Databases
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Database {
+    pub id: i64,
+    pub customer_id: i64,
+    pub engine: String,
+    pub name: String,
+    /// The account that reaches this database, and only this one.
+    pub db_user: String,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_username: Option<String>,
+    /// Filled in when listing, so the UI need not query the server itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
+fn row_to_database(row: &rusqlite::Row<'_>) -> rusqlite::Result<Database> {
+    Ok(Database {
+        id: row.get(0)?,
+        customer_id: row.get(1)?,
+        engine: row.get(2)?,
+        name: row.get(3)?,
+        db_user: row.get(4)?,
+        created_at: row.get::<_, i64>(5)? as u64,
+        customer_username: row.get(6)?,
+        size_bytes: None,
+    })
+}
+
+pub fn list_databases(conn: &Connection, customer_id: Option<i64>) -> Result<Vec<Database>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at, c.username
+           FROM databases d
+           JOIN customers c ON c.id = d.customer_id
+          WHERE (?1 IS NULL OR d.customer_id = ?1)
+          ORDER BY d.name",
+    )?;
+    let rows = stmt.query_map(params![customer_id], row_to_database)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn find_database(conn: &Connection, id: i64) -> Result<Option<Database>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at, c.username
+           FROM databases d
+           JOIN customers c ON c.id = d.customer_id
+          WHERE d.id = ?1",
+    )?;
+    Ok(stmt.query_row(params![id], row_to_database).optional()?)
+}
+
+pub fn create_database_record(
+    conn: &Connection,
+    customer_id: i64,
+    engine: &str,
+    name: &str,
+    db_user: &str,
+) -> Result<Database> {
+    find_customer(conn, customer_id)?.context("no such customer")?;
+
+    conn.execute(
+        "INSERT INTO databases (customer_id, engine, name, db_user, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![customer_id, engine, name, db_user, now_secs() as i64],
+    )?;
+
+    find_database(conn, conn.last_insert_rowid())?
+        .context("the database record disappeared immediately after being written")
+}
+
+pub fn delete_database_record(conn: &Connection, id: i64) -> Result<Database> {
+    let record = find_database(conn, id)?.context("no such database")?;
+    conn.execute("DELETE FROM databases WHERE id = ?1", params![id])?;
+    Ok(record)
 }

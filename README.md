@@ -467,6 +467,43 @@ invisible until the day it expires, so it is stated rather than assumed.
 Use `--staging` while DNS is still settling: untrusted certificates, far looser
 rate limits.
 
+## Databases
+
+One MariaDB server hosts every customer's databases. **Isolation is the
+server's own grant system, not filtering in the panel** — a user is granted
+rights on exactly one database and cannot see any other in `SHOW DATABASES`. The
+boundary therefore holds for a customer connecting directly with a MySQL client,
+not only for one going through the panel.
+
+Verified on a live server with two customers:
+
+| Connected as | Sees |
+| --- | --- |
+| `root` | every database |
+| `acme_wordpress` | `acme_wordpress`, `information_schema` |
+| `globex_wordpress` | `globex_wordpress`, `information_schema` |
+
+Reaching across fails with `ERROR 1044 Access denied`, and so does reading
+`mysql.user`. `GET /api/v1/databases/{id}/grants` asks the server what a user can
+actually reach, rather than the panel asserting it.
+
+Names are prefixed with the owner, so `wordpress` becomes `acme_wordpress` and
+two customers can both use the name they want.
+
+Passwords are generated, shown **once**, and never stored — there is no way to
+display one again, only to reset it. Dropping a database destroys data with no
+undo, so it requires typing the database name, enforced in the API.
+
+Ember drives the `mysql` client rather than linking a driver, for the same
+reason it drives certbot. Statements go in over **stdin**, never as arguments,
+so a password never appears in the process list. Identifiers are restricted to a
+closed character set rather than escaped — quoting arbitrary strings into SQL is
+a defence that has failed for enough other people to be worth not relying on.
+
+PostgreSQL and Redis are recognised by the engine type and refused with a clear
+message; the shape is there so adding them does not mean reworking the store or
+the API.
+
 ## File manager
 
 Each domain gets a browser for its own directory: navigate, edit text files,
