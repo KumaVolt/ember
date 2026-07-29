@@ -29,6 +29,7 @@ final class DatabaseController extends AbstractController
         return $this->render('database/index.html.twig', [
             'databases' => $result['databases'] ?? [],
             'server' => $result['server'] ?? ['available' => false, 'status' => 'unknown'],
+            'engines' => $result['engines'] ?? [],
         ]);
     }
 
@@ -65,6 +66,7 @@ final class DatabaseController extends AbstractController
             'databases' => $owned,
             'others' => $others,
             'server' => $all['server'] ?? ['available' => false, 'status' => 'unknown'],
+            'engines' => $all['engines'] ?? [],
         ]);
     }
 
@@ -99,9 +101,12 @@ final class DatabaseController extends AbstractController
     #[Route('/databases/new', name: 'database_new', methods: ['GET'])]
     public function new(): Response
     {
+        $status = $this->api->get('/api/v1/databases') ?? [];
+
         return $this->render('database/new.html.twig', [
             'customers' => ($this->api->get('/api/v1/customers')['customers'] ?? []),
-            'server' => ($this->api->get('/api/v1/databases')['server'] ?? ['available' => false]),
+            'server' => $status['server'] ?? ['available' => false],
+            'engines' => $status['engines'] ?? [],
         ]);
     }
 

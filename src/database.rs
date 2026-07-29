@@ -52,10 +52,10 @@ impl Engine {
     /// Refuse clearly rather than half-working on an engine with no support.
     fn require_supported(self) -> Result<()> {
         match self {
-            Self::MariaDb => Ok(()),
-            other => bail!(
-                "{} is not supported yet — only mariadb is implemented",
-                other.as_str()
+            Self::MariaDb | Self::Postgres => Ok(()),
+            Self::Redis => bail!(
+                "Redis has no databases to create — per-customer instances are not \
+                 implemented yet"
             ),
         }
     }
@@ -78,22 +78,47 @@ pub fn client_path() -> Option<std::path::PathBuf> {
 /// state on a fresh box and produces a much better message than a failed
 /// statement halfway through creating something.
 pub fn server_status() -> (bool, String) {
-    let Some(client) = client_path() else {
-        return (false, "the mariadb client is not installed".to_string());
-    };
+    engine_status(Engine::MariaDb)
+}
 
-    match run_sql_raw(&client, "SELECT VERSION();") {
-        Ok(output) => {
-            let version = output
-                .lines()
-                .last()
-                .unwrap_or("unknown")
-                .trim()
-                .to_string();
-            (true, format!("mariadb {version}"))
+/// Whether one engine's server is reachable, and what it says it is.
+pub fn engine_status(engine: Engine) -> (bool, String) {
+    match engine {
+        Engine::MariaDb => {
+            let Some(client) = client_path() else {
+                return (false, "the mariadb client is not installed".to_string());
+            };
+            match run_sql_raw(&client, "SELECT VERSION();") {
+                Ok(output) => {
+                    let version = output
+                        .lines()
+                        .last()
+                        .unwrap_or("unknown")
+                        .trim()
+                        .to_string();
+                    (true, format!("mariadb {version}"))
+                }
+                Err(err) => (false, format!("{err:#}")),
+            }
         }
-        Err(err) => (false, format!("{err:#}")),
+        Engine::Postgres => postgres_status(),
+        Engine::Redis => (false, "redis has no databases to create".to_string()),
     }
+}
+
+/// Every engine the panel can create databases on, with its state.
+pub fn available_engines() -> Vec<serde_json::Value> {
+    [Engine::MariaDb, Engine::Postgres]
+        .iter()
+        .map(|engine| {
+            let (up, status) = engine_status(*engine);
+            serde_json::json!({
+                "engine": engine.as_str(),
+                "available": up,
+                "status": status,
+            })
+        })
+        .collect()
 }
 
 /// Run SQL as the server administrator.
@@ -257,8 +282,12 @@ pub fn create(
     check_identifier(user, "database user", MAX_DB_USER)?;
     check_password(password)?;
 
-    if exists(database)? {
+    if exists_on(engine, database)? {
         bail!("a database named {database} already exists on this server");
+    }
+
+    if engine == Engine::Postgres {
+        return postgres_create(database, user, password);
     }
 
     // Each grant names one database. That is what stops this user seeing
@@ -285,6 +314,10 @@ pub fn drop(cfg: &Config, engine: Engine, database: &str, user: &str) -> Result<
     check_identifier(database, "database name", MAX_DB_NAME)?;
     check_identifier(user, "database user", MAX_DB_USER)?;
 
+    if engine == Engine::Postgres {
+        return postgres_drop(database, user);
+    }
+
     let mut sql = format!("DROP DATABASE IF EXISTS `{database}`;\n");
     for host in GRANT_HOSTS {
         sql.push_str(&format!("DROP USER IF EXISTS '{user}'@'{host}';\n"));
@@ -302,6 +335,10 @@ pub fn set_password(cfg: &Config, engine: Engine, user: &str, password: &str) ->
     check_identifier(user, "database user", MAX_DB_USER)?;
     check_password(password)?;
 
+    if engine == Engine::Postgres {
+        return postgres_set_password(user, password);
+    }
+
     // Every host the user was granted from, or the password would change for
     // socket connections and not for TCP ones.
     let mut sql = String::new();
@@ -316,17 +353,26 @@ pub fn set_password(cfg: &Config, engine: Engine, user: &str, password: &str) ->
     Ok(())
 }
 
-pub fn exists(database: &str) -> Result<bool> {
+pub fn exists_on(engine: Engine, database: &str) -> Result<bool> {
     check_identifier(database, "database name", MAX_DB_NAME)?;
-    let output = run_sql(&format!(
-        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{database}';"
-    ))?;
-    Ok(!output.trim().is_empty())
+    match engine {
+        Engine::Postgres => postgres_exists(database),
+        _ => {
+            let output = run_sql(&format!(
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA \
+                 WHERE SCHEMA_NAME = '{database}';"
+            ))?;
+            Ok(!output.trim().is_empty())
+        }
+    }
 }
 
 /// Size on disk, for display. `None` when the server cannot say.
-pub fn size_bytes(database: &str) -> Option<u64> {
+pub fn size_bytes_on(engine: Engine, database: &str) -> Option<u64> {
     check_identifier(database, "database name", MAX_DB_NAME).ok()?;
+    if engine == Engine::Postgres {
+        return postgres_size(database);
+    }
     let output = run_sql(&format!(
         "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.TABLES \
          WHERE table_schema = '{database}';"
@@ -337,8 +383,12 @@ pub fn size_bytes(database: &str) -> Option<u64> {
 
 /// What a given user can actually reach — the isolation claim, checked against
 /// the server rather than asserted.
-pub fn grants_for(user: &str) -> Result<Vec<String>> {
+pub fn grants_for_on(engine: Engine, user: &str) -> Result<Vec<String>> {
     check_identifier(user, "database user", MAX_DB_USER)?;
+
+    if engine == Engine::Postgres {
+        return postgres_grants(user);
+    }
 
     let mut grants = Vec::new();
     for host in GRANT_HOSTS {
@@ -464,4 +514,171 @@ pub fn harden() -> Result<()> {
          FLUSH PRIVILEGES;\n",
     )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL
+// ---------------------------------------------------------------------------
+//
+// Isolation works differently here, and the difference matters. MySQL hides a
+// database from anyone without rights on it. PostgreSQL grants `CONNECT` to
+// `PUBLIC` on every new database, so without an explicit revoke *every* role on
+// the server can connect to *every* customer's database. That revoke is the
+// whole isolation story, so it is not optional.
+
+fn psql_path() -> Option<std::path::PathBuf> {
+    for candidate in ["/usr/bin/psql", "/usr/local/bin/psql"] {
+        let path = std::path::PathBuf::from(candidate);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Run SQL as the `postgres` superuser.
+///
+/// Via `su` rather than `psql -U postgres`, because a default install
+/// authenticates the superuser by peer — the connecting process must actually
+/// be that user. SQL goes in on stdin, so nothing sensitive reaches the
+/// process list and there is no quoting to get wrong.
+fn run_psql(sql: &str, database: Option<&str>) -> Result<String> {
+    use std::io::Write;
+
+    let psql = psql_path().context("the postgresql client is not installed")?;
+    let mut command = format!("{} -v ON_ERROR_STOP=1 -q -t -A", psql.display());
+    if let Some(database) = database {
+        command.push_str(&format!(" -d {database}"));
+    }
+
+    let mut child = std::process::Command::new("su")
+        .args(["-s", "/bin/sh", "postgres", "-c", &command])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("could not run psql as the postgres user")?;
+
+    child
+        .stdin
+        .as_mut()
+        .context("psql stdin unavailable")?
+        .write_all(sql.as_bytes())
+        .context("could not send SQL")?;
+
+    let output = child.wait_with_output().context("psql did not complete")?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if !output.status.success() {
+        let reason = stderr.trim();
+        if reason.contains("could not connect") || reason.contains("No such file or directory") {
+            bail!("the postgresql server is not running");
+        }
+        bail!(
+            "{}",
+            if reason.is_empty() {
+                stdout.trim()
+            } else {
+                reason
+            }
+        );
+    }
+
+    Ok(stdout)
+}
+
+pub fn postgres_status() -> (bool, String) {
+    if psql_path().is_none() {
+        return (false, "the postgresql client is not installed".to_string());
+    }
+    match run_psql("SELECT version();", None) {
+        Ok(output) => {
+            let version = output
+                .lines()
+                .next()
+                .unwrap_or("unknown")
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            (true, version.to_lowercase())
+        }
+        Err(err) => (false, format!("{err:#}")),
+    }
+}
+
+fn postgres_create(database: &str, user: &str, password: &str) -> Result<()> {
+    // Owner rather than a grant list: the customer then has full rights inside
+    // their own database, including the public schema, which PostgreSQL 15
+    // otherwise locks down.
+    let sql = format!(
+        "CREATE ROLE \"{user}\" LOGIN PASSWORD '{password}';\n\
+         CREATE DATABASE \"{database}\" OWNER \"{user}\" ENCODING 'UTF8';\n\
+         -- Without this every role on the server could connect to it.\n\
+         REVOKE CONNECT ON DATABASE \"{database}\" FROM PUBLIC;\n\
+         GRANT CONNECT ON DATABASE \"{database}\" TO \"{user}\";\n"
+    );
+    run_psql(&sql, None)?;
+
+    // Run inside the new database: schema privileges do not exist until it does.
+    let schema = format!(
+        "GRANT ALL ON SCHEMA public TO \"{user}\";\n\
+         ALTER SCHEMA public OWNER TO \"{user}\";\n"
+    );
+    let _ = run_psql(&schema, Some(database));
+
+    Ok(())
+}
+
+fn postgres_drop(database: &str, user: &str) -> Result<()> {
+    // Existing sessions block a drop, and a customer's application will hold
+    // one open indefinitely.
+    let sql = format!(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+           WHERE datname = '{database}' AND pid <> pg_backend_pid();\n\
+         DROP DATABASE IF EXISTS \"{database}\";\n\
+         DROP ROLE IF EXISTS \"{user}\";\n"
+    );
+    run_psql(&sql, None)?;
+    Ok(())
+}
+
+fn postgres_set_password(user: &str, password: &str) -> Result<()> {
+    run_psql(
+        &format!("ALTER ROLE \"{user}\" WITH PASSWORD '{password}';\n"),
+        None,
+    )?;
+    Ok(())
+}
+
+fn postgres_exists(database: &str) -> Result<bool> {
+    let output = run_psql(
+        &format!("SELECT 1 FROM pg_database WHERE datname = '{database}';"),
+        None,
+    )?;
+    Ok(!output.trim().is_empty())
+}
+
+fn postgres_size(database: &str) -> Option<u64> {
+    run_psql(&format!("SELECT pg_database_size('{database}');"), None)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn postgres_grants(user: &str) -> Result<Vec<String>> {
+    let output = run_psql(
+        &format!(
+            "SELECT datname || ': CONNECT' FROM pg_database \
+               WHERE has_database_privilege('{user}', datname, 'CONNECT');"
+        ),
+        None,
+    )?;
+    Ok(output
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect())
 }

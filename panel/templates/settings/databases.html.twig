@@ -1,0 +1,63 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Database servers{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Databases</h1>
+            <p>The engines on this server, and what each is carrying.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('settings_applications') }}">Applications &amp; Databases</a>
+    </header>
+
+    <div class="card">
+        <h2>Engines</h2>
+        <table>
+            <tr><th>Engine</th><th>Status</th><th>Databases</th><th></th></tr>
+            {% for server in servers %}
+                <tr>
+                    <td>
+                        <strong>{{ server.name }}</strong>
+                        {% if not server.can_create %}
+                            <div style="color:var(--text-muted);font-size:.8rem">
+                                A cache, not a database server — nothing to create here.
+                            </div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if server.available %}
+                            <span class="badge ok"><span class="dot"></span>running</span>
+                        {% else %}
+                            <span class="badge muted">not running</span>
+                        {% endif %}
+                        <div class="mono" style="color:var(--text-muted);font-size:.78rem;
+                                                 max-width:22rem;white-space:normal">
+                            {{ server.status }}
+                        </div>
+                    </td>
+                    <td class="mono">{{ server.can_create ? server.databases : '—' }}</td>
+                    <td style="text-align:right;white-space:nowrap">
+                        {% if server.available and server.can_create %}
+                            <a class="btn ghost sm" href="{{ path('databases') }}">View databases</a>
+                        {% elseif not server.available %}
+                            <form method="post" action="{{ path('settings_service_install') }}"
+                                  style="display:inline">
+                                <input type="hidden" name="id" value="{{ server.service_id }}">
+                                <button class="btn ghost sm" type="submit">Install</button>
+                            </form>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    <div class="card">
+        <div class="body" style="color:var(--text-muted);font-size:.88rem">
+            A database belongs to a customer and optionally to one of their sites. Create one
+            from <strong>Websites &amp; Domains → Databases</strong> on the site that needs it,
+            or from <a href="{{ path('databases') }}">Databases</a> for a customer generally.
+        </div>
+    </div>
+{% endblock %}

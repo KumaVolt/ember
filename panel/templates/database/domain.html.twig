@@ -78,9 +78,13 @@
                     <div style="min-width:9rem">
                         <label for="engine">Engine</label>
                         <select id="engine" name="engine" style="margin:0">
-                            <option value="mariadb">MariaDB</option>
-                            <option value="postgres" disabled>PostgreSQL — not yet</option>
-                            <option value="redis" disabled>Redis — not yet</option>
+                            {% for e in engines|default([]) %}
+                                <option value="{{ e.engine }}" {{ not e.available ? 'disabled' }}>
+                                    {{ e.engine == 'mariadb' ? 'MariaDB' : 'PostgreSQL' }}{{ not e.available ? ' — not running' }}
+                                </option>
+                            {% else %}
+                                <option value="mariadb">MariaDB</option>
+                            {% endfor %}
                         </select>
                     </div>
                     <button class="btn" type="submit">{{ ui.icon('plus', 15) }} Create</button>

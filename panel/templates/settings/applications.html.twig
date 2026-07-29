@@ -1,0 +1,32 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Applications &amp; Databases{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Applications &amp; Databases</h1>
+            <p>What is available for customer sites to use.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('settings') }}">Settings</a>
+    </header>
+
+    <div class="tiles">
+        <a class="tile" href="{{ path('settings_databases') }}"
+           style="text-decoration:none;color:inherit;display:block">
+            <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
+                <span style="color:var(--accent)">{{ ui.icon('database', 17) }}</span>
+                <strong>Databases</strong>
+            </div>
+            <div class="sub">MariaDB, PostgreSQL and Redis — what is running and what is on them.</div>
+        </a>
+    </div>
+
+    <div class="card">
+        <div class="body" style="color:var(--text-muted);font-size:.88rem">
+            Creating a database for a site is done from that site:
+            <strong>Websites &amp; Domains → Databases</strong>. This section is about the
+            servers themselves.
+        </div>
+    </div>
+{% endblock %}

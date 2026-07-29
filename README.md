@@ -656,9 +656,26 @@ so a password never appears in the process list. Identifiers are restricted to a
 closed character set rather than escaped — quoting arbitrary strings into SQL is
 a defence that has failed for enough other people to be worth not relying on.
 
-PostgreSQL and Redis are recognised by the engine type and refused with a clear
-message; the shape is there so adding them does not mean reworking the store or
-the API.
+**PostgreSQL works too**, with the same shape — a database, a role that owns it,
+and a password shown at creation. The isolation is not the same mechanism
+though, and the difference matters: MySQL hides a database from anyone without
+rights on it, but PostgreSQL grants `CONNECT` to `PUBLIC` on every new database,
+so without an explicit revoke every role on the server could reach every
+customer's data. Ember revokes it and grants back only to the owner. Verified
+with two customers:
+
+```text
+psql -U acme_app -d globex_app
+  FATAL: permission denied for database "globex_app"
+  DETAIL: User does not have CONNECT privilege.
+```
+
+Redis is recognised and refused with a clear message — it has no databases to
+create, and per-customer instances are not implemented.
+
+**Settings → Applications & Databases → Databases** shows each engine's state
+and how many databases it carries. Creating one for a site stays where it
+belongs: **Websites & Domains → Databases** on that site.
 
 ## File manager
 

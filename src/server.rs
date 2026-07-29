@@ -1264,6 +1264,58 @@ async fn resource_api(
             }),
         ),
 
+        // Server-level view of the database engines, for Settings. Distinct
+        // from /api/v1/databases, which is about a customer's databases.
+        (&Method::GET, "/api/v1/database-servers") => {
+            let conn = store::open()?;
+            let all = store::list_databases(&conn, None, None)?;
+
+            let servers: Vec<serde_json::Value> = [
+                (database::Engine::MariaDb, "MariaDB", "mariadb"),
+                (database::Engine::Postgres, "PostgreSQL", "postgresql"),
+            ]
+            .iter()
+            .map(|(engine, name, service_id)| {
+                let (up, status) = database::engine_status(*engine);
+                let count = all.iter().filter(|d| d.engine == engine.as_str()).count();
+                serde_json::json!({
+                    "engine": engine.as_str(),
+                    "name": name,
+                    "service_id": service_id,
+                    "available": up,
+                    "status": status,
+                    "databases": count,
+                    "can_create": true,
+                })
+            })
+            .collect();
+
+            let redis = services::list()
+                .into_iter()
+                .find(|s| s.id == "redis")
+                .map(|s| (s.installed, s.running));
+
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "servers": servers,
+                    "redis": redis.map(|(installed, running)| serde_json::json!({
+                        "engine": "redis",
+                        "name": "Redis",
+                        "service_id": "redis",
+                        "available": running,
+                        "status": if installed {
+                            if running { "running" } else { "installed, stopped" }
+                        } else { "not installed" },
+                        "databases": 0,
+                        // Redis has no databases to create; the panel should not
+                        // imply otherwise.
+                        "can_create": false,
+                    })),
+                }),
+            )
+        }
+
         (&Method::GET, "/api/v1/system") => api_json(
             StatusCode::OK,
             serde_json::json!({
@@ -1370,19 +1422,23 @@ async fn resource_api(
             let mut records = store::list_databases(&conn, customer_id, domain_id)?;
 
             // Sizes come from the server, not the record, so they cannot go
-            // stale. Skipped entirely when the server is down.
-            let (up, status) = database::server_status();
-            if up {
-                for record in &mut records {
-                    record.size_bytes = database::size_bytes(&record.name);
+            // stale. Asked per engine, and skipped for any that is down.
+            for record in &mut records {
+                if let Ok(engine) = database::Engine::parse(&record.engine)
+                    && database::engine_status(engine).0
+                {
+                    record.size_bytes = database::size_bytes_on(engine, &record.name);
                 }
             }
 
+            let (up, status) = database::server_status();
             api_json(
                 StatusCode::OK,
                 serde_json::json!({
                     "databases": records,
+                    // Kept for the existing UI, which asks about the default.
                     "server": { "available": up, "status": status },
+                    "engines": database::available_engines(),
                 }),
             )
         }
@@ -1600,7 +1656,9 @@ async fn resource_api(
                     StatusCode::OK,
                     serde_json::json!({
                         "user": record.db_user,
-                        "grants": database::grants_for(&record.db_user).unwrap_or_default(),
+                        "grants": database::Engine::parse(&record.engine)
+                            .and_then(|engine| database::grants_for_on(engine, &record.db_user))
+                            .unwrap_or_default(),
                     }),
                 ),
                 None => api_error(StatusCode::NOT_FOUND, "no such database"),

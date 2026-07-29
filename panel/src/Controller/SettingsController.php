@@ -67,6 +67,27 @@ final class SettingsController extends AbstractController
         return $this->redirectToRoute('settings_server');
     }
 
+    // --- applications & databases ------------------------------------------
+
+    #[Route('/settings/applications', name: 'settings_applications', methods: ['GET'])]
+    public function applications(): Response
+    {
+        return $this->render('settings/applications.html.twig');
+    }
+
+    #[Route('/settings/applications/databases', name: 'settings_databases', methods: ['GET'])]
+    public function databaseServers(): Response
+    {
+        $result = $this->api->get('/api/v1/database-servers') ?? [];
+
+        $servers = $result['servers'] ?? [];
+        if (!empty($result['redis'])) {
+            $servers[] = $result['redis'];
+        }
+
+        return $this->render('settings/databases.html.twig', ['servers' => $servers]);
+    }
+
     // --- services ----------------------------------------------------------
 
     #[Route('/settings/services', name: 'settings_services', methods: ['GET'])]
