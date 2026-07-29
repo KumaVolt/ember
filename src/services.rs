@@ -96,6 +96,25 @@ const CATALOGUE: &[Definition] = &[
         ),
     },
     Definition {
+        id: "nodejs",
+        name: "Node.js",
+        category: "Runtimes",
+        description: "JavaScript runtime and npm. Needed by most modern PHP sites for \
+                      their asset build — Laravel Mix, Vite, Tailwind and the like.",
+        binaries: &["/usr/bin/node", "/usr/local/bin/node"],
+        packages: (&["nodejs", "npm"], &["nodejs", "npm"]),
+        // Not a service: nothing runs in the background after installing.
+        unit: None,
+        version_arg: Some("--version"),
+        note: Some(
+            "Installs the version the distribution ships, which is usually well behind \
+             — Debian 12 gives Node 18, which is past end of life. For a current \
+             version add the NodeSource repository yourself; ember will not add a \
+             third-party repository to your machine on its own. Note also that ember \
+             does not host Node applications yet, so this is for build tooling.",
+        ),
+    },
+    Definition {
         id: "nginx",
         name: "nginx",
         category: "Web servers",

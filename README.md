@@ -379,9 +379,15 @@ Settings
 
 **Services** is a catalogue of components with their real state — installed,
 running, version — and installation through the distribution's package manager:
-MariaDB, PostgreSQL, Redis, nginx, Apache, certbot, plus extra PHP versions for
-customer sites. Where Ember can install something but cannot yet *use* it —
-PostgreSQL and Redis — the entry says so rather than implying more than exists.
+MariaDB, PostgreSQL, Redis, nginx, Apache, certbot, Node.js, plus extra PHP
+versions for customer sites. Where Ember can install something but cannot yet *use* it — PostgreSQL, Redis
+and Node.js — the entry says so rather than implying more than exists. Node in
+particular installs whatever the distribution ships, which on Debian 12 is a
+release past end of life; the entry says that too, and Ember will not add a
+third-party repository to the machine on its own.
+
+When nothing can be installed at all — a Mac has no `apt`, `dnf` or `yum` — the
+page says so once at the top rather than leaving a column of unexplained badges.
 
 Nothing is removed from here. Uninstalling a database server out from under a
 customer's site is not worth putting behind one click.
