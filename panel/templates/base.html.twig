@@ -195,6 +195,22 @@
         .btn.danger { background:var(--surface); color:var(--danger); border-color:var(--danger-border); }
         .btn.sm { padding:.25rem .5rem; font-size:.78rem; }
 
+        /* A dropdown built on <details>: opens without JavaScript and closes
+           on Escape or an outside click via the tiny handler below. */
+        .menu { position:relative; display:inline-block; }
+        .menu > summary { list-style:none; cursor:pointer; }
+        .menu > summary::-webkit-details-marker { display:none; }
+        .menu-items { position:absolute; right:0; top:calc(100% + .35rem); z-index:20;
+                      min-width:11rem; padding:.3rem; background:var(--surface);
+                      border:1px solid var(--border); border-radius:var(--radius);
+                      box-shadow:var(--shadow-lift); }
+        .menu-item { display:flex; align-items:center; gap:.5rem; width:100%;
+                     padding:.45rem .55rem; border:0; border-radius:var(--radius);
+                     background:transparent; color:var(--text); font:inherit;
+                     font-size:.86rem; text-align:left; cursor:pointer; }
+        .menu-item:hover { background:var(--surface-sunken); text-decoration:none; }
+        .menu-item .icon { color:var(--text-muted); }
+
         label { display:block; font-size:.82rem; font-weight:500; margin:0 0 .3rem; }
         input, select { width:100%; padding:.45rem .6rem; margin:0 0 .9rem;
                         border-radius:var(--radius); border:1px solid var(--border-strong);
@@ -292,6 +308,20 @@
 </div>
 
 <script>
+    // Close any open dropdown when clicking elsewhere or pressing Escape.
+    // <details> does neither on its own, and a menu that stays open after use
+    // feels broken.
+    document.addEventListener('click', e => {
+        document.querySelectorAll('details.menu[open]').forEach(menu => {
+            if (!menu.contains(e.target)) menu.open = false;
+        });
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') {
+            document.querySelectorAll('details.menu[open]').forEach(m => m.open = false);
+        }
+    });
+
     // Client-side filter over anything marked data-filter. Deliberately not a
     // server round trip: at control-panel scale the whole list is already here.
     function emberFilter(term) {

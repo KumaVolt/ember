@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     body::Body,
-    extract::{Request, State},
+    extract::{FromRequest, Request, State},
     http::{HeaderName, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -801,6 +801,83 @@ async fn control_api(inner: &Inner, request: Request, path: &str, user: &str) ->
 
 /// Send a browser to the login page rather than a bare 401 — a blank 401 reads
 /// as a broken panel.
+/// Take a multipart upload and store every file it carries.
+///
+/// Browsers cannot send anything but a form here, so on success this answers
+/// with a redirect when the form asked for one, and JSON otherwise — the same
+/// endpoint serves a person and a script.
+async fn upload(
+    cfg: &Config,
+    domain: &store::Domain,
+    request: Request,
+    actor: &str,
+) -> Result<Response> {
+    use axum::extract::Multipart;
+
+    let mut multipart = match Multipart::from_request(request, &()).await {
+        Ok(multipart) => multipart,
+        Err(err) => {
+            return Ok(api_error(
+                StatusCode::BAD_REQUEST,
+                &format!("could not read the upload: {err}"),
+            ));
+        }
+    };
+
+    let mut directory = "/".to_string();
+    let mut redirect_to: Option<String> = None;
+    let mut saved: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name().unwrap_or("").to_string().as_str() {
+            "path" => directory = field.text().await.unwrap_or_default(),
+            "redirect" => redirect_to = field.text().await.ok(),
+            "file" | "files" | "files[]" => {
+                let filename = field.file_name().unwrap_or("").to_string();
+                if filename.is_empty() {
+                    continue; // An empty file input still sends a part.
+                }
+                match field.bytes().await {
+                    Ok(bytes) => {
+                        match files::save_upload(cfg, domain, &directory, &filename, &bytes) {
+                            Ok(path) => saved.push(path),
+                            Err(err) => failures.push(format!("{filename}: {err}")),
+                        }
+                    }
+                    Err(err) => failures.push(format!("{filename}: {err}")),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !saved.is_empty() {
+        esw::log_line(&format!(
+            "[{}] {actor} uploaded {} file(s) to {}",
+            daemon::now_secs(),
+            saved.len(),
+            domain.name
+        ));
+    }
+
+    if let Some(target) = redirect_to {
+        // Only same-origin paths, so a crafted form cannot bounce the operator
+        // somewhere else after an upload.
+        let safe = target.starts_with('/') && !target.starts_with("//");
+        return Ok(redirect(if safe { &target } else { "/" }));
+    }
+
+    Ok(api_json(
+        if failures.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        },
+        serde_json::json!({ "saved": saved, "failed": failures }),
+    ))
+}
+
 /// Is this account allowed to change the machine?
 fn is_admin(user: &str) -> bool {
     if user == "root" {
@@ -1101,6 +1178,11 @@ async fn resource_api(
                         .into_response(),
                     Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
                 },
+
+                // Multipart is handled here rather than in the panel: the
+                // worker cannot parse it, and this keeps file bytes out of the
+                // PHP tier entirely instead of buffering them twice.
+                (&Method::POST, "upload") => upload(&cfg, &domain, request, actor).await?,
 
                 (&Method::POST, "write") => {
                     let body = json_body(request).await?;

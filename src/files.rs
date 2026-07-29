@@ -343,3 +343,50 @@ pub fn delete(cfg: &Config, domain: &Domain, requested: &str) -> Result<String> 
 
     Ok(display_path(domain, &path))
 }
+
+/// Store an uploaded file in a directory.
+///
+/// The browser supplies the name, so it is reduced to its final component and
+/// checked: a filename is never allowed to steer the path. `resolve` still has
+/// the last word, but stripping here means a hostile name fails as a bad name
+/// rather than as a traversal attempt.
+pub fn save_upload(
+    cfg: &Config,
+    domain: &Domain,
+    directory: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<String> {
+    cfg.require_host_mode("upload files")?;
+
+    if bytes.len() > MAX_WRITE_BYTES {
+        bail!(
+            "{filename} is larger than {} MB",
+            MAX_WRITE_BYTES / 1024 / 1024
+        );
+    }
+
+    let name = Path::new(filename)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    if name.is_empty() || name == "." || name == ".." {
+        bail!("invalid file name");
+    }
+
+    let dir = directory.trim_end_matches('/');
+    let target = format!("{dir}/{name}");
+
+    let path = resolve(domain, &target, false)?;
+    if path.is_dir() {
+        bail!("{name} is a directory here");
+    }
+
+    std::fs::write(&path, bytes).with_context(|| format!("could not write {name}"))?;
+    if let Some(owner) = &domain.customer_username {
+        give_to_owner(&path, owner)?;
+    }
+
+    Ok(display_path(domain, &path))
+}

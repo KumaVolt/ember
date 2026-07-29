@@ -482,6 +482,13 @@ a planted `/etc` symlink refused, and the domain root itself cannot be deleted.
 Binary files and anything over 2 MB are download-only rather than opened in the
 editor.
 
+**Uploads post straight to the control API**, not through the panel. The worker
+cannot parse multipart, and this keeps file bytes out of the PHP tier entirely
+instead of buffering them twice. An uploaded name is reduced to its final
+component before use, so a filename can never steer the path — verified with
+`../../../../etc/pwned.txt`, which lands as `httpdocs/pwned.txt`. The
+post-upload redirect is confined to same-origin paths.
+
 ## The panel
 
 `panel/` in this repository is a Symfony 8.1 application. Its source is version
@@ -520,8 +527,6 @@ Ember serves whatever `public/index.php` it finds and needs no Rust changes.
 - **TLS for the panel itself.** Customer domains can get certificates, but the
   panel still serves plain HTTP on its own port, so its session cookie is
   `HttpOnly` + `SameSite=Lax` and not yet `Secure`.
-- **File uploads.** The worker parses form-encoded bodies but not multipart, so
-  uploading a file is not wired up yet.
 - **Successful issuance is untested.** The path to certbot is verified end to
   end — including a real rejection from Let's Encrypt staging — but obtaining an
   actual certificate needs a public domain pointing at the server.
