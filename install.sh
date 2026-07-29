@@ -219,7 +219,9 @@ else
       # Accept either a panel-only tarball or a full repository archive.
       SRC="$TMP/panel"
       if [ ! -f "$SRC/public/index.php" ]; then
-        SRC="$(find "$TMP/panel" -maxdepth 3 -type d -name panel 2>/dev/null | head -1)"
+        # -mindepth 1 matters: the extraction directory is itself called
+        # "panel", so without it find matches the wrong thing first.
+        SRC="$(find "$TMP/panel" -mindepth 1 -maxdepth 3 -type d -name panel 2>/dev/null | head -1)"
       fi
       if [ -n "$SRC" ] && [ -f "$SRC/public/index.php" ]; then
         deploy_panel_from_dir "$SRC" && PANEL_STAGED=yes
