@@ -81,11 +81,9 @@
                         <span class="tool disabled">{{ ui.icon('mail', 17) }} Mail</span>
                         <span class="tool disabled">{{ ui.icon('settings', 17) }} Hosting</span>
 
-                        <form method="post" class="tool danger"
-                              action="{{ path('domain_delete', {id: domain.id}) }}"
-                              onsubmit="return confirm('Remove {{ domain.name }} and delete its files?')">
-                            <button type="submit">{{ ui.icon('trash', 17) }} Remove</button>
-                        </form>
+                        <a class="tool danger" href="{{ path('domain_delete_confirm', {id: domain.id}) }}">
+                            {{ ui.icon('trash', 17) }} Remove
+                        </a>
                     </div>
                 </details>
             {% endfor %}

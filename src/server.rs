@@ -969,6 +969,15 @@ async fn resource_api(
             )
         }
 
+        (&Method::GET, r) if path_id(r, "/api/v1/domains").is_some() => {
+            let id = path_id(r, "/api/v1/domains").unwrap();
+            let conn = store::open()?;
+            match store::find_domain(&conn, id)? {
+                Some(domain) => api_json(StatusCode::OK, serde_json::json!(domain)),
+                None => api_error(StatusCode::NOT_FOUND, "no such domain"),
+            }
+        }
+
         (&Method::POST, "/api/v1/domains") => {
             let body = json_body(request).await?;
             let Some(name) = field(&body, "name") else {
@@ -1149,11 +1158,39 @@ async fn resource_api(
 
         (&Method::DELETE, r) if path_id(r, "/api/v1/domains").is_some() => {
             let id = path_id(r, "/api/v1/domains").unwrap();
+
+            // Read the confirmation before touching anything. Accepted from the
+            // query string or a JSON body so both a browser form and a script
+            // can supply it.
+            let query_confirm = request
+                .uri()
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "confirm")
+                .map(|(_, v)| percent_decode(v));
+            let body = json_body(request).await.unwrap_or(serde_json::json!({}));
+            let confirm = query_confirm.or_else(|| field(&body, "confirm").map(str::to_string));
+
             let conn = store::open()?;
             let domain = match store::find_domain(&conn, id)? {
                 Some(domain) => domain,
                 None => return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain"))),
             };
+
+            // This deletes a directory tree and revokes a live site, so the
+            // caller must name what they are destroying. Enforced here rather
+            // than only in the UI: a client-side prompt guards nothing.
+            if confirm.as_deref() != Some(domain.name.as_str()) {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!(
+                        "confirmation required: send confirm={} to remove this domain and its files",
+                        domain.name
+                    ),
+                )));
+            }
 
             let mut notes = Vec::new();
             if cfg.mode == config::Mode::Host {

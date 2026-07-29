@@ -97,10 +97,35 @@ final class DomainController extends AbstractController
         return $this->redirectToRoute('domains');
     }
 
-    #[Route('/domains/{id}/delete', name: 'domain_delete', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function delete(int $id): Response
+    #[Route('/domains/{id}/delete', name: 'domain_delete_confirm', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function confirmDelete(int $id): Response
     {
-        $result = $this->api->delete('/api/v1/domains/'.$id);
+        $domain = $this->api->get('/api/v1/domains/'.$id);
+        if (null === $domain || isset($domain['error'])) {
+            $this->addFlash('error', 'That domain no longer exists.');
+
+            return $this->redirectToRoute('domains');
+        }
+
+        $domain['certificate'] =
+            $this->api->get('/api/v1/domains/'.$id.'/certificate')['certificate'] ?? null;
+
+        return $this->render('domain/delete.html.twig', ['domain' => $domain]);
+    }
+
+    #[Route('/domains/{id}/delete', name: 'domain_delete', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function delete(int $id, Request $request): Response
+    {
+        // Passed through to Ember, which does the matching itself. Checking it
+        // only here would leave the API unguarded.
+        $confirm = trim((string) $request->request->get('confirm'));
+        $result = $this->api->delete('/api/v1/domains/'.$id.'?confirm='.rawurlencode($confirm));
+
+        if (null !== $result && isset($result['error'])) {
+            $this->addFlash('error', $result['error']);
+
+            return $this->redirectToRoute('domain_delete_confirm', ['id' => $id]);
+        }
 
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');

@@ -1,0 +1,40 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Remove {{ domain.name }}{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Remove {{ domain.name }}</h1>
+            <p>This cannot be undone.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('domains') }}">Cancel</a>
+    </header>
+
+    <div class="card" style="max-width:38rem; border-color:var(--danger-border)">
+        <h2 style="color:var(--danger)">What this deletes</h2>
+        <div class="body">
+            <ul style="margin:0 0 1.1rem; padding-left:1.1rem; color:var(--text-muted); font-size:.9rem">
+                <li>The entire directory <code class="mono">{{ domain.root }}</code>,
+                    including <strong>everything in httpdocs</strong> and its logs</li>
+                <li>The generated {{ domain.webserver }} vhost, so the site stops being served</li>
+                {% if domain.certificate and domain.certificate.present %}
+                    <li>The TLS certificate stays with certbot but stops being used</li>
+                {% endif %}
+            </ul>
+            <p style="margin:0 0 1.1rem; font-size:.9rem">
+                The customer <strong>{{ domain.customer_username }}</strong> and their system
+                account are kept.
+            </p>
+
+            <form method="post" action="{{ path('domain_delete', {id: domain.id}) }}">
+                <label for="confirm">Type <strong>{{ domain.name }}</strong> to confirm</label>
+                <input id="confirm" name="confirm" autocomplete="off" autocapitalize="none"
+                       spellcheck="false" placeholder="{{ domain.name }}" required autofocus>
+                <button class="btn danger" type="submit">
+                    {{ ui.icon('trash', 15) }} Remove this domain permanently
+                </button>
+            </form>
+        </div>
+    </div>
+{% endblock %}
