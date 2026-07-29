@@ -266,12 +266,48 @@ pub fn set_shell(cfg: &Config, user: &str, enabled: bool) -> Result<String> {
     Ok(format!("shell for {user} set to {shell}"))
 }
 
+/// Create a customer's webspace and hand it to them.
+///
+/// Made when the customer is, not when their first domain is: a customer with
+/// no sites yet still has somewhere that belongs to them.
+pub fn create_webspace(cfg: &Config, owner: &str) -> Result<String> {
+    cfg.require_host_mode(&format!("create the webspace for {owner}"))?;
+
+    let path = PathBuf::from(crate::store::customer_root(owner));
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("could not create {}", path.display()))?;
+    apply_ownership_shallow(&path, owner)?;
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Create the directory tree for a domain and hand it to its owner.
 ///
 /// Gated on host mode: laying out `/var/www` is a change to the machine, so it
 /// must not happen on a developer's laptop by accident.
 pub fn provision(cfg: &Config, domain: &Domain, owner: &str) -> Result<()> {
     cfg.require_host_mode(&format!("create the hosting layout for {}", domain.name))?;
+
+    // The record can outlive the account: replacing a container keeps the
+    // store on its volume and discards /etc/passwd, and an operator can remove
+    // an account by hand. Recreate it here rather than failing with "no system
+    // account named X", which describes a symptom and not the fix.
+    if !crate::auth::system_user_exists(owner) {
+        crate::auth::create_system_user(owner, "/usr/sbin/nologin").with_context(|| {
+            format!("{owner} has no system account and one could not be created")
+        })?;
+        crate::esw::log_line(&format!(
+            "[{}] recreated missing system account {owner}",
+            crate::daemon::now_secs()
+        ));
+    }
+
+    // The customer's webspace holds all their domains, so it has to exist and
+    // be theirs before anything is put inside it.
+    let webspace = PathBuf::from(crate::store::customer_root(owner));
+    std::fs::create_dir_all(&webspace)
+        .with_context(|| format!("could not create {}", webspace.display()))?;
+    apply_ownership_shallow(&webspace, owner)?;
 
     let root = PathBuf::from(&domain.root);
     if root.exists() {
@@ -329,7 +365,8 @@ pub fn deprovision(cfg: &Config, domain: &Domain) -> Result<()> {
     cfg.require_host_mode(&format!("remove the hosting layout for {}", domain.name))?;
 
     let root = PathBuf::from(&domain.root);
-    let expected = crate::store::root_for(&domain.name);
+    let owner = domain.customer_username.clone().unwrap_or_default();
+    let expected = crate::store::root_for(&owner, &domain.name);
     if domain.root != expected {
         bail!(
             "refusing to delete {} — it is not the expected path {expected}",
@@ -408,6 +445,23 @@ fn apply_ownership(root: &Path, owner: &str) -> Result<()> {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
         }
     }
+    Ok(())
+}
+
+/// Own one directory without touching what is already inside it.
+///
+/// Used for the customer webspace: it holds other domains, and recursing would
+/// rewrite ownership across all of them on every provision.
+fn apply_ownership_shallow(path: &Path, owner: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (uid, _) = ids_for(owner)?;
+    let gid = web_group_id().unwrap_or_else(|| ids_for(owner).map(|(_, g)| g).unwrap_or(0));
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
+    // SAFETY: lchown on a path we built from the customer's own name.
+    unsafe { libc::lchown(c_path.as_ptr(), uid, gid) };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o750))?;
     Ok(())
 }
 

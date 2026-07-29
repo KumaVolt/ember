@@ -57,7 +57,10 @@ final class CustomerController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
 
-            return $this->redirectToRoute('customer_new');
+            // Re-rendered so the form still holds what was typed.
+            return $this->render('customer/new.html.twig', [
+                'submitted' => $request->request->all(),
+            ]);
         }
 
         $this->addFlash('ok', sprintf(

@@ -21,7 +21,7 @@
             {% else %}
                 <form method="post" action="{{ path('database_create') }}">
                     <label for="name">Database name</label>
-                    <input id="name" name="name" placeholder="wordpress" autocapitalize="none"
+                    <input id="name" name="name" value="{{ submitted.name|default('') }}" placeholder="wordpress" autocapitalize="none"
                            spellcheck="false" required autofocus>
                     <p style="color:var(--text-muted);font-size:.78rem;margin:-.7rem 0 .9rem">
                         Lowercase letters, digits and <code class="mono">_</code>. The customer's

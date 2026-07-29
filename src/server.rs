@@ -1113,11 +1113,34 @@ async fn resource_api(
                 field(&body, "email"),
             ) {
                 Ok(customer) => {
+                    // The webspace exists from the moment the customer does,
+                    // so there is somewhere to put files before a domain is
+                    // added rather than only afterwards.
+                    let mut notes = Vec::new();
+                    if cfg.mode == config::Mode::Host {
+                        match vhost::create_webspace(&cfg, username) {
+                            Ok(path) => notes.push(format!("webspace {path}")),
+                            Err(err) => notes.push(format!("webspace not created: {err}")),
+                        }
+                    }
+
                     esw::log_line(&format!(
                         "[{}] {actor} created customer {username}",
                         daemon::now_secs()
                     ));
-                    api_json(StatusCode::CREATED, serde_json::json!(customer))
+                    api_json(
+                        StatusCode::CREATED,
+                        serde_json::json!({
+                            "id": customer.id,
+                            "username": customer.username,
+                            "display_name": customer.display_name,
+                            "email": customer.email,
+                            "status": customer.status,
+                            "created_at": customer.created_at,
+                            "domain_count": customer.domain_count,
+                            "notes": notes,
+                        }),
+                    )
                 }
                 Err(err) => api_error(StatusCode::BAD_REQUEST, &err.to_string()),
             }

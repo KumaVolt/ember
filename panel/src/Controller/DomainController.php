@@ -35,6 +35,19 @@ final class DomainController extends AbstractController
     #[Route('/domains/new', name: 'domain_new', methods: ['GET'])]
     public function new(): Response
     {
+        return $this->renderNewDomain();
+    }
+
+    /**
+     * The add-domain form, optionally with what was just submitted.
+     *
+     * Re-rendered rather than redirected on failure: a redirect throws away
+     * everything typed, which turns one typo into filling the form again.
+     *
+     * @param array<string, mixed> $submitted
+     */
+    private function renderNewDomain(array $submitted = []): Response
+    {
         $customers = $this->api->get('/api/v1/customers')['customers'] ?? [];
 
         // The signed-in account's own customer first, so the default choice is
@@ -47,6 +60,7 @@ final class DomainController extends AbstractController
             // The database option is only offered when there is a server to
             // create one on.
             'server' => ($this->api->get('/api/v1/databases')['server'] ?? ['available' => false]),
+            'submitted' => $submitted,
         ]);
     }
 
@@ -71,7 +85,7 @@ final class DomainController extends AbstractController
                     htmlspecialchars($created['error'] ?? 'Ember did not respond.'),
                 ));
 
-                return $this->redirectToRoute('domain_new');
+                return $this->renderNewDomain($request->request->all());
             }
 
             $this->addFlash('ok', sprintf(
@@ -90,8 +104,8 @@ final class DomainController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
 
-            // Back to the form, not the list: the operator has something to fix.
-            return $this->redirectToRoute('domain_new');
+            // Back to the form with what was typed, not a blank one.
+            return $this->renderNewDomain($request->request->all());
         }
 
         // Ember reports what it could and could not do — writing the vhost,
@@ -173,8 +187,8 @@ final class DomainController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
 
-            // Back to the form, not the list: the operator has something to fix.
-            return $this->redirectToRoute('domain_new');
+            // Back to the form with what was typed, not a blank one.
+            return $this->renderNewDomain($request->request->all());
         }
 
         $message = 'Certificate issued.';

@@ -16,7 +16,7 @@
         <div class="body">
                 <form method="post" action="{{ path('domain_create') }}">
                     <label for="name">Domain name</label>
-                    <input id="name" name="name" placeholder="example.com" value="{{ app.request.get('name') }}"
+                    <input id="name" name="name" placeholder="example.com" value="{{ submitted.name|default('') }}"
                            autocapitalize="none" spellcheck="false" required autofocus>
 
                     <div class="row">
@@ -34,7 +34,8 @@
                                         {{ customer.username == app.user.userIdentifier ? ' — you' }}
                                     </option>
                                 {% endfor %}
-                                <option value="__new__" {{ customers is empty ? 'selected' }}>
+                                <option value="__new__"
+                                            {{ customers is empty or submitted.customer_id|default('') == '__new__' ? 'selected' }}>
                                     + New customer…
                                 </option>
                             </select>
@@ -50,7 +51,8 @@
 
                     {# Revealed by the select above, and shown from the start when
                        there is no customer to pick. #}
-                    <div id="new-customer" {{ customers is empty ? '' : 'hidden' }}
+                    <div id="new-customer"
+                         {{ customers is empty or submitted.customer_id|default('') == '__new__' ? '' : 'hidden' }}
                          style="border:1px solid var(--border);border-radius:var(--radius);
                                 padding:1rem;margin:0 0 1rem;background:var(--surface-sunken)">
                         <div style="font-weight:600;font-size:.88rem;margin-bottom:.6rem">
@@ -60,17 +62,20 @@
                             <div>
                                 <label for="new_customer_username">Username</label>
                                 <input id="new_customer_username" name="new_customer_username"
+                                       value="{{ submitted.new_customer_username|default('') }}"
                                        placeholder="acme" autocapitalize="none" spellcheck="false"
                                        {{ customers is empty ? 'required' }}>
                             </div>
                             <div>
                                 <label for="new_customer_display_name">Display name</label>
                                 <input id="new_customer_display_name" name="new_customer_display_name"
+                                       value="{{ submitted.new_customer_display_name|default('') }}"
                                        placeholder="Acme Ltd">
                             </div>
                             <div>
                                 <label for="new_customer_email">Email</label>
                                 <input id="new_customer_email" name="new_customer_email"
+                                       value="{{ submitted.new_customer_email|default('') }}"
                                        type="email" placeholder="ops@acme.com">
                             </div>
                         </div>
@@ -100,6 +105,7 @@
                                     <span style="color:var(--text-muted);font-weight:400">— optional</span>
                                 </label>
                                 <input id="database_name" name="database_name"
+                                       value="{{ submitted.database_name|default('') }}"
                                        placeholder="taken from the domain name"
                                        autocapitalize="none" spellcheck="false">
                                 <p style="color:var(--text-muted);font-size:.76rem;margin:-.7rem 0 0">

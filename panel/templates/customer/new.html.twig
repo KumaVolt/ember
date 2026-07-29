@@ -16,7 +16,7 @@
         <div class="body">
             <form method="post" action="{{ path('customer_create') }}">
                 <label for="username">Username</label>
-                <input id="username" name="username" placeholder="acme"
+                <input id="username" name="username" value="{{ submitted.username|default('') }}" placeholder="acme"
                        autocapitalize="none" spellcheck="false" required autofocus>
                 <p class="hint" style="color:var(--text-muted);font-size:.78rem;margin:-.7rem 0 .9rem">
                     Lowercase letters, digits, <code class="mono">-</code> and
@@ -26,11 +26,11 @@
                 <div class="row">
                     <div>
                         <label for="display_name">Display name</label>
-                        <input id="display_name" name="display_name" placeholder="Acme Ltd">
+                        <input id="display_name" name="display_name" value="{{ submitted.display_name|default('') }}" placeholder="Acme Ltd">
                     </div>
                     <div>
                         <label for="email">Email</label>
-                        <input id="email" name="email" type="email" placeholder="ops@acme.com">
+                        <input id="email" name="email" value="{{ submitted.email|default('') }}" type="email" placeholder="ops@acme.com">
                     </div>
                 </div>
                 <p class="hint" style="color:var(--text-muted);font-size:.78rem;margin:-.5rem 0 1rem">

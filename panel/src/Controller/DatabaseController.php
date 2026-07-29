@@ -122,7 +122,14 @@ final class DatabaseController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
 
-            return $this->redirectToRoute('database_new');
+            $status = $this->api->get('/api/v1/databases') ?? [];
+
+            return $this->render('database/new.html.twig', [
+                'customers' => ($this->api->get('/api/v1/customers')['customers'] ?? []),
+                'server' => $status['server'] ?? ['available' => false],
+                'engines' => $status['engines'] ?? [],
+                'submitted' => $request->request->all(),
+            ]);
         }
 
         // Shown once. Ember does not store it, so there is no way to display

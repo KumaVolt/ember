@@ -203,13 +203,22 @@ pub fn check_domain_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The on-disk root for a domain.
-pub fn root_for(name: &str) -> String {
-    format!("{VHOST_ROOT}/{name}")
+/// A customer's webspace: everything they own lives under here.
+///
+/// Nested rather than flat so a customer with several sites has one directory
+/// to look at, back up, or hand over — and so a customer named `acme` cannot
+/// collide with a domain in the same namespace.
+pub fn customer_root(owner: &str) -> String {
+    format!("{VHOST_ROOT}/{owner}")
 }
 
-pub fn docroot_for(name: &str) -> String {
-    format!("{VHOST_ROOT}/{name}/{DOCROOT_NAME}")
+/// The on-disk root for a domain, inside its customer's webspace.
+pub fn root_for(owner: &str, name: &str) -> String {
+    format!("{VHOST_ROOT}/{owner}/{name}")
+}
+
+pub fn docroot_for(owner: &str, name: &str) -> String {
+    format!("{VHOST_ROOT}/{owner}/{name}/{DOCROOT_NAME}")
 }
 
 // ---------------------------------------------------------------------------
@@ -374,14 +383,18 @@ pub fn create_domain(
         bail!("{name} already exists on this server");
     }
 
+    let owner = find_customer(conn, customer_id)?
+        .context("no such customer")?
+        .username;
+
     conn.execute(
         "INSERT INTO domains (customer_id, name, root, docroot, webserver, status, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6)",
         params![
             customer_id,
             name,
-            root_for(name),
-            docroot_for(name),
+            root_for(&owner, name),
+            docroot_for(&owner, name),
             webserver,
             now_secs() as i64
         ],

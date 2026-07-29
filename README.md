@@ -464,15 +464,22 @@ files are owned by that customer's user and group — which is the isolation
 boundary, not a convention.
 
 ```text
-/var/www/vhosts/<domain>/
-  webroot/      the document root — the only directory served
+/var/www/vhosts/<customer>/           the customer's webspace
+  <domain>/
+    webroot/    the document root — the only directory served
   private/      never served: application storage, credentials, uploads
   logs/         access.log and error.log for this domain alone
   conf/         the generated vhost config
   error_docs/   403, 404 and 500 pages, wired into the vhost
   cgi-bin/      CGI scripts, deliberately outside the document root
-  tmp/          per-domain scratch, off the shared /tmp
+    tmp/        per-domain scratch, off the shared /tmp
 ```
+
+Domains sit **inside their customer's webspace** rather than flat, so a customer
+with several sites has one directory to look at, back up or hand over — and a
+customer named `acme` cannot collide with a domain in the same namespace. The
+webspace is created with the customer, not with their first domain: an owner
+with no sites yet still has somewhere that belongs to them.
 
 The split between `webroot` and `private` is the point: only `webroot` is
 reachable by URL, so anything a site must keep but must not expose has an
