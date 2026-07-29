@@ -346,17 +346,17 @@ pub fn install(cfg: &Config, id: &str) -> Result<String> {
 // Node versions
 // ---------------------------------------------------------------------------
 
-/// Node releases offered for installation.
+/// Node releases offered for installation, with the date each stops receiving
+/// security fixes.
 ///
-/// The distribution package is whatever it happens to ship — Debian 12 gives an
-/// end-of-life 18 — so anything current has to come from NodeSource. That is a
-/// third-party repository, which is why it is an explicit choice here rather
-/// than something the plain "install Node" button does quietly.
-pub const AVAILABLE_NODE: &[(&str, &str)] = &[
-    ("24", "current"),
-    ("22", "LTS"),
-    ("20", "LTS, security support only"),
-    ("18", "end of life"),
+/// Dates rather than labels like "LTS": a label is a claim that silently goes
+/// stale, and "LTS" says nothing about whether that release is still getting
+/// fixes today. Node 18 and 20 have both passed their date already.
+pub const AVAILABLE_NODE: &[(&str, i64, &str)] = &[
+    ("24", 1_840_665_600, "2028-04-30"),
+    ("22", 1_809_043_200, "2027-04-30"),
+    ("20", 1_777_507_200, "2026-04-30"),
+    ("18", 1_745_971_200, "2025-04-30"),
 ];
 
 /// Which Node is installed, if any.
@@ -385,12 +385,15 @@ fn node_major() -> Option<String> {
 
 pub fn node_versions() -> Vec<serde_json::Value> {
     let installed = node_major();
+    let now = crate::daemon::now_secs() as i64;
+
     AVAILABLE_NODE
         .iter()
-        .map(|(major, label)| {
+        .map(|(major, eol_at, eol_date)| {
             serde_json::json!({
                 "major": major,
-                "label": label,
+                "end_of_life": now >= *eol_at,
+                "end_of_life_date": eol_date,
                 "installed": installed.as_deref() == Some(*major),
             })
         })
@@ -405,7 +408,7 @@ pub fn node_versions() -> Vec<serde_json::Value> {
 pub fn install_node(cfg: &Config, major: &str) -> Result<String> {
     cfg.require_host_mode(&format!("install Node {major}"))?;
 
-    if !AVAILABLE_NODE.iter().any(|(known, _)| *known == major) {
+    if !AVAILABLE_NODE.iter().any(|(known, _, _)| *known == major) {
         bail!("unknown Node version {major}");
     }
     if package_manager() != Some("apt") {

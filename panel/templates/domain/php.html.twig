@@ -41,11 +41,16 @@
             <div class="body">
                 <div class="row">
                     <div>
-                        <label for="version">Version</label>
+                        <label for="version">
+                            Version
+                            {% if php.end_of_life %}
+                                <span class="badge warn">end of life</span>
+                            {% endif %}
+                        </label>
                         <select id="version" name="version">
-                            {% for version in php.available_versions %}
-                                <option value="{{ version }}" {{ version == php.version ? 'selected' }}>
-                                    PHP {{ version }}
+                            {% for v in php.available_versions %}
+                                <option value="{{ v.version }}" {{ v.version == php.version ? 'selected' }}>
+                                    PHP {{ v.version }}{{ v.end_of_life ? ' — end of life' }}
                                 </option>
                             {% endfor %}
                         </select>
@@ -55,6 +60,14 @@
                         <input value="FPM ({{ domain.webserver }})" disabled>
                     </div>
                 </div>
+                {% if php.end_of_life %}
+                    <div class="flash error" style="margin:0 0 .8rem">
+                        <strong>PHP {{ php.version }} stopped receiving security fixes on
+                        {{ php.end_of_life_date }}.</strong>
+                        Known vulnerabilities in it will not be patched. Move this site to a
+                        supported version once its code is ready.
+                    </div>
+                {% endif %}
                 <p style="color:var(--text-muted);font-size:.8rem;margin:0">
                     Pool socket: <code class="mono">{{ php.pool_socket }}</code>.
                     Extra versions come from <a href="{{ path('settings_services') }}">Settings → Services</a>.

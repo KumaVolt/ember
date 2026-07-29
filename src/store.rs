@@ -578,3 +578,16 @@ pub fn database_password(conn: &Connection, id: i64) -> Result<Option<String>> {
         .flatten()
         .filter(|value| !value.is_empty()))
 }
+
+/// Customers whose system account has gone missing.
+///
+/// The store and the system database can drift: replacing a container discards
+/// /etc/passwd while the records survive on the volume, and an operator can
+/// remove an account by hand. Either way the next thing that touches the
+/// account fails with something unhelpful, so the drift is worth finding first.
+pub fn customers_missing_accounts(conn: &Connection) -> Result<Vec<Customer>> {
+    Ok(list_customers(conn)?
+        .into_iter()
+        .filter(|customer| !crate::auth::system_user_exists(&customer.username))
+        .collect())
+}

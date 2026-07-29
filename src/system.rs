@@ -253,19 +253,41 @@ pub fn power(cfg: &Config, action: PowerAction, confirm: &str) -> Result<String>
 /// The panel runs on a pinned engine; customer sites will want other versions.
 /// Offered rather than discovered so the list stays to builds known to exist
 /// for the platform.
-pub const AVAILABLE_ENGINES: &[&str] = &["8.5.8", "8.4.23", "8.3.31", "8.2.30", "8.1.35"];
+/// PHP builds offered, with the date each stops receiving security fixes.
+///
+/// The date is what matters, not a support tier: "security support" tells an
+/// operator nothing about whether that is still true today.
+pub const AVAILABLE_ENGINES: &[(&str, i64, &str)] = &[
+    ("8.5.8", 1_924_905_600, "2030-12-31"),
+    ("8.4.23", 1_861_747_200, "2028-12-31"),
+    ("8.3.31", 1_830_211_200, "2027-12-31"),
+    ("8.2.30", 1_798_675_200, "2026-12-31"),
+    ("8.1.35", 1_767_139_200, "2025-12-31"),
+];
+
+/// Is this PHP version past its security-support date?
+pub fn engine_end_of_life(version: &str) -> Option<(bool, &'static str)> {
+    let now = crate::daemon::now_secs() as i64;
+    AVAILABLE_ENGINES
+        .iter()
+        .find(|(candidate, _, _)| *candidate == version)
+        .map(|(_, eol_at, date)| (now >= *eol_at, *date))
+}
 
 pub fn engine_versions() -> Result<Vec<serde_json::Value>> {
     let installed = crate::esw::installed_versions()?;
     let current = Config::resolve(None, None)?.esw_version;
+    let now = crate::daemon::now_secs() as i64;
 
     Ok(AVAILABLE_ENGINES
         .iter()
-        .map(|version| {
+        .map(|(version, eol_at, eol_date)| {
             serde_json::json!({
                 "version": version,
                 "installed": installed.iter().any(|v| v == version),
                 "in_use": *version == current,
+                "end_of_life": now >= *eol_at,
+                "end_of_life_date": eol_date,
             })
         })
         .collect())

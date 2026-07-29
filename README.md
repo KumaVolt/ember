@@ -122,9 +122,22 @@ cannot drift apart.
 
 Panel users **are** system users. There is no parallel user directory.
 
-**First run** redirects everything to `/setup`: pick a username (default `admin`),
-a password of at least 12 characters, and optionally an email. Once an
-administrator exists, `/setup` is closed permanently.
+**First run** can go two ways.
+
+`ember login` on a machine with no administrator walks through setup from the
+command line. Being able to run that command is itself the proof of access,
+which is a better bootstrap than a web page anyone who finds the port could
+complete first. It offers root when root has a password, otherwise whoever is
+running it; sets a system password if the account has none; and offers to
+install the components a hosting server needs.
+
+Or visit the panel, which redirects everything to `/setup` until an
+administrator exists. Either way `/setup` closes permanently once one does.
+
+An account backed by a system password authenticates through PAM, so Ember
+stores no credential for it — changing the password with `passwd` changes what
+the panel accepts, immediately. Where the account has no system password and one
+cannot be set, Ember holds a panel-only password instead.
 
 **Signing in** happens at `/login` with a username and password. Passwords are
 checked by **PAM** against the real system account — so `passwd`, account expiry,
@@ -383,7 +396,13 @@ Settings
 running, version — and installation through the distribution's package manager:
 MariaDB, PostgreSQL, Redis, nginx, Apache, certbot, Node.js, plus extra PHP
 versions for customer sites. Where Ember can install something but cannot yet *use* it — PostgreSQL, Redis
-and Node.js — the entry says so rather than implying more than exists. Node can be installed **by major version** — 24, 22, 20, 18 — which pulls from
+and Node.js — the entry says so rather than implying more than exists. Versions carry the date their security fixes end, rather than a label like
+"LTS" — a label is a claim that goes stale, and it says nothing about whether a
+release is still getting fixes today. Anything past its date is marked **end of
+life**, in the version list and again on a domain's PHP page when that is the
+version it runs.
+
+Node can be installed **by major version** — 24, 22, 20, 18 — which pulls from
 NodeSource, since the distribution package is whatever it ships (Debian 12 gives
 an end-of-life 18). Adding a third-party repository only happens when a version
 is asked for by name, never as a side effect of installing something else. One

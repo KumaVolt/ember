@@ -444,6 +444,134 @@ fn certificates(command: CertCommand) -> Result<()> {
     }
 }
 
+/// Walk through setting up the first administrator, from the command line.
+fn first_run_setup() -> Result<()> {
+    use std::io::{BufRead, Write};
+
+    let cfg = Config::resolve(None, None)?;
+
+    println!("\nNo administrator is set up yet. Let's do that now.\n");
+
+    // Prefer root when it can actually be authenticated with; otherwise
+    // whoever is running this, which on a managed server is the person who
+    // just installed it.
+    let me = auth::current_username()?;
+    let root_usable = auth::system_user_exists("root") && auth::system_user_has_password("root");
+    let default_user = if root_usable {
+        "root".to_string()
+    } else {
+        me.clone()
+    };
+
+    print!("Which system account should administer the panel? [{default_user}] ");
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    let username = match answer.trim() {
+        "" => default_user,
+        given => given.to_string(),
+    };
+
+    if !auth::system_user_exists(&username) {
+        anyhow::bail!("{username:?} is not a system account on this machine");
+    }
+
+    // A system account with a password authenticates through PAM, so ember
+    // stores no credential of its own. Without one there is nothing to check,
+    // so a password has to be set — either on the account or inside ember.
+    let source = if auth::system_user_has_password(&username) {
+        println!("  {username} has a password; the panel will check it through PAM.");
+        accounts::Source::System
+    } else if auth::running_as_root() {
+        println!("\n  {username} has no password set, so there is nothing to sign in with.");
+        print!("  Set a system password for {username} now? [Y/n] ");
+        std::io::stdout().flush().ok();
+        let mut choice = String::new();
+        std::io::stdin().lock().read_line(&mut choice)?;
+
+        if matches!(choice.trim().to_lowercase().as_str(), "" | "y" | "yes") {
+            let password = prompt_new_password()?;
+            auth::set_system_password(&username, &password)?;
+            println!("  password set for {username}");
+            accounts::Source::System
+        } else {
+            // Falls back to a password ember holds, which still gets the
+            // operator in without touching the system account.
+            println!("  a panel-only password will be used instead");
+            accounts::Source::Local
+        }
+    } else {
+        println!("\n  {username} has no system password and this is not root,");
+        println!("  so a panel-only password will be used.");
+        accounts::Source::Local
+    };
+
+    let password = match source {
+        accounts::Source::System => String::new(),
+        accounts::Source::Local => prompt_new_password()?,
+    };
+
+    let mut store = accounts::Store::load();
+    // create_admin insists on a strong password; a system-backed account has
+    // none to store, so one is generated and immediately discarded.
+    let stored_password = if password.is_empty() {
+        crate::database::generate_password()?
+    } else {
+        password
+    };
+    store.create_admin(&username, &stored_password, None, None, source)?;
+
+    println!("\n  administrator {username:?} is ready.");
+
+    // Offer the components a hosting server actually needs, rather than
+    // leaving someone to discover Settings later.
+    if cfg.mode == config::Mode::Host && auth::running_as_root() {
+        offer_services()?;
+    }
+
+    Ok(())
+}
+
+/// Ask which of the usual components to install, and install them.
+fn offer_services() -> Result<()> {
+    use std::io::{BufRead, Write};
+
+    let missing: Vec<_> = services::list()
+        .into_iter()
+        .filter(|service| !service.installed && service.installable)
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    println!("\nThese are not installed yet:\n");
+    for service in &missing {
+        println!("  {:<12} {}", service.id, service.description);
+    }
+
+    print!("\nInstall them now? [Y/n] ");
+    std::io::stdout().flush().ok();
+    let mut choice = String::new();
+    std::io::stdin().lock().read_line(&mut choice)?;
+    if !matches!(choice.trim().to_lowercase().as_str(), "" | "y" | "yes") {
+        println!("  skipped — install them later from Settings → Services");
+        return Ok(());
+    }
+
+    let cfg = Config::resolve(None, None)?;
+    for service in missing {
+        print!("  installing {}... ", service.id);
+        std::io::stdout().flush().ok();
+        match services::install(&cfg, &service.id) {
+            Ok(message) => println!("{message}"),
+            Err(err) => println!("failed: {err}"),
+        }
+    }
+
+    Ok(())
+}
+
 /// Restore access to the panel. Running this requires being on the machine,
 /// which is the same proof of possession `ember login` relies on.
 fn recover(user: Option<&str>) -> Result<()> {
@@ -522,10 +650,18 @@ fn describe_mode(mode: &str) -> String {
 }
 
 /// Mint a one-time login URL for someone already on this machine.
+///
+/// On a machine with no administrator yet this is also the setup path: being
+/// able to run this command is itself the proof of access, which is a better
+/// bootstrap than a web page anyone who finds the port can complete first.
 fn login(user: Option<&str>) -> Result<()> {
     let Some(state) = daemon::status() else {
         anyhow::bail!("ember is not running — start it with `ember start`");
     };
+
+    if accounts::Store::load().is_empty() {
+        first_run_setup()?;
+    }
 
     let (token, user) = auth::issue_login_token(user)?;
     let cfg = Config {

@@ -150,6 +150,14 @@ pub async fn run(cfg: Config) -> Result<()> {
 
             let web = vhost::ensure_running(&cfg);
             esw::log_line(&format!("[{}] web server: {web}", daemon::now_secs()));
+
+            // Recreate system accounts the store knows about but the machine
+            // does not. Replacing a container keeps the records on the volume
+            // and discards /etc/passwd, which otherwise breaks the next thing
+            // that touches the account with a message about the wrong problem.
+            for message in reconcile_accounts(&cfg) {
+                esw::log_line(&format!("[{}] accounts: {message}", daemon::now_secs()));
+            }
         });
     }
 
@@ -901,6 +909,35 @@ async fn upload(
     ))
 }
 
+/// Put back system accounts that the store expects and the machine lacks.
+fn reconcile_accounts(cfg: &Config) -> Vec<String> {
+    if cfg.mode != config::Mode::Host {
+        return Vec::new();
+    }
+
+    let Ok(conn) = store::open() else {
+        return vec!["could not open the store".into()];
+    };
+    let Ok(missing) = store::customers_missing_accounts(&conn) else {
+        return vec!["could not check for missing accounts".into()];
+    };
+    if missing.is_empty() {
+        return Vec::new();
+    }
+
+    missing
+        .into_iter()
+        .map(|customer| {
+            // No login shell: a recreated hosting account should be no more
+            // privileged than a fresh one, and shell access is a setting.
+            match auth::create_system_user(&customer.username, "/usr/sbin/nologin") {
+                Ok(()) => format!("recreated missing system account {}", customer.username),
+                Err(err) => format!("could not recreate {}: {err}", customer.username),
+            }
+        })
+        .collect()
+}
+
 /// A domain's hosting settings, or the defaults when it has none.
 fn hosting_of(domain: &store::Domain) -> vhost::HostingSettings {
     domain
@@ -1205,7 +1242,10 @@ async fn resource_api(
             // Installing an engine version is ember's own business; everything
             // else is a distribution package.
             if let Some(version) = field(&body, "engine") {
-                if !system::AVAILABLE_ENGINES.contains(&version) {
+                if !system::AVAILABLE_ENGINES
+                    .iter()
+                    .any(|(candidate, _, _)| *candidate == version)
+                {
                     return Ok(Some(api_error(
                         StatusCode::BAD_REQUEST,
                         "unknown engine version",
@@ -1230,7 +1270,7 @@ async fn resource_api(
             let work = if let Some(major) = field(&body, "node") {
                 if !services::AVAILABLE_NODE
                     .iter()
-                    .any(|(known, _)| *known == major)
+                    .any(|(known, _, _)| *known == major)
                 {
                     return Ok(Some(api_error(
                         StatusCode::BAD_REQUEST,
@@ -1955,16 +1995,42 @@ async fn resource_api(
                 .unwrap_or_default();
 
             match *method {
-                Method::GET => api_json(
-                    StatusCode::OK,
-                    serde_json::json!({
-                        "settings": stored,
-                        "version": php::version_for(&domain, &cfg),
-                        "available_versions": esw::installed_versions().unwrap_or_default(),
-                        "suggested_disable_functions": php::SUGGESTED_DISABLED,
-                        "pool_socket": php::socket_path(&domain.name)?.to_string_lossy(),
-                    }),
-                ),
+                Method::GET => {
+                    let version = php::version_for(&domain, &cfg);
+                    let installed = esw::installed_versions().unwrap_or_default();
+
+                    // Each installed version with its support state, so the
+                    // picker can say which choices are already unsupported
+                    // rather than listing them all as equivalent.
+                    let versions: Vec<serde_json::Value> = installed
+                        .iter()
+                        .map(|candidate| {
+                            let (eol, date) =
+                                system::engine_end_of_life(candidate).unwrap_or((false, "unknown"));
+                            serde_json::json!({
+                                "version": candidate,
+                                "end_of_life": eol,
+                                "end_of_life_date": date,
+                            })
+                        })
+                        .collect();
+
+                    let (eol, eol_date) =
+                        system::engine_end_of_life(&version).unwrap_or((false, "unknown"));
+
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "settings": stored,
+                            "version": version,
+                            "end_of_life": eol,
+                            "end_of_life_date": eol_date,
+                            "available_versions": versions,
+                            "suggested_disable_functions": php::SUGGESTED_DISABLED,
+                            "pool_socket": php::socket_path(&domain.name)?.to_string_lossy(),
+                        }),
+                    )
+                }
 
                 Method::POST => {
                     let body = json_body(request).await?;

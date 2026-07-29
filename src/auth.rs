@@ -296,6 +296,30 @@ pub fn set_system_password(user: &str, password: &str) -> Result<()> {
     Ok(())
 }
 
+/// Does this system account have a usable password?
+///
+/// A shadow entry of `*`, `!`, `!!` or empty means no password is set — the
+/// account exists but nobody can authenticate as it. On a cloud image root
+/// is usually in exactly that state, which decides whether the panel can be
+/// handed to root or has to set one up.
+pub fn system_user_has_password(user: &str) -> bool {
+    let Ok(shadow) = std::fs::read_to_string("/etc/shadow") else {
+        // Unreadable means not root, and guessing "yes" would be worse than
+        // guessing "no": the caller offers to set one either way.
+        return false;
+    };
+
+    shadow
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| *name == user)
+        .map(|(_, rest)| {
+            let hash = rest.split(':').next().unwrap_or("");
+            !hash.is_empty() && !hash.starts_with('!') && hash != "*"
+        })
+        .unwrap_or(false)
+}
+
 pub fn running_as_root() -> bool {
     // SAFETY: geteuid is always safe and cannot fail.
     unsafe { libc::geteuid() == 0 }
