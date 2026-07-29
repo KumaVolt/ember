@@ -133,6 +133,17 @@ pub async fn run(cfg: Config) -> Result<()> {
         started_at: daemon::now_secs(),
     })?;
 
+    // Bring the database up if it is installed but idle. Deliberately after the
+    // panel is already serving: a database that will not start is worth
+    // reporting, not worth refusing to boot over.
+    {
+        let cfg = cfg.clone();
+        tokio::task::spawn_blocking(move || {
+            let status = database::ensure_running(&cfg);
+            esw::log_line(&format!("[{}] database: {status}", daemon::now_secs()));
+        });
+    }
+
     esw::log_line(&format!(
         "[{}] ready — panel at {}",
         daemon::now_secs(),

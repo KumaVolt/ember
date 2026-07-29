@@ -320,3 +320,118 @@ pub fn grants_for(user: &str) -> Result<Vec<String>> {
     let output = run_sql(&format!("SHOW GRANTS FOR '{user}'@'localhost';"))?;
     Ok(output.lines().map(|l| l.trim().to_string()).collect())
 }
+
+/// Where the server itself lives, as opposed to the client.
+fn server_binary() -> Option<std::path::PathBuf> {
+    for candidate in [
+        "/usr/sbin/mariadbd",
+        "/usr/sbin/mysqld",
+        "/usr/bin/mariadbd",
+        "/usr/bin/mysqld",
+    ] {
+        let path = std::path::PathBuf::from(candidate);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Start MariaDB if it is installed but not accepting connections.
+///
+/// On a normal server systemd owns this and the call is a no-op. It matters in
+/// a container, where ember is PID 1 and there is no init to bring the database
+/// up — without this, a container that ships MariaDB would still report no
+/// database server.
+///
+/// Best effort by design: a database that will not start must not stop the
+/// panel from serving, it must be reported.
+pub fn ensure_running(cfg: &Config) -> String {
+    if cfg.mode != crate::config::Mode::Host {
+        return "isolated mode: not starting a database server".to_string();
+    }
+
+    let (up, status) = server_status();
+    if up {
+        return status;
+    }
+    if client_path().is_none() {
+        return "not installed".to_string();
+    }
+    let Some(server) = server_binary() else {
+        return "client present but no server installed".to_string();
+    };
+
+    // Prefer the service manager where there is one, so the database is
+    // supervised by whatever supervises everything else on the box.
+    let started = if std::path::Path::new("/run/systemd/system").is_dir() {
+        std::process::Command::new("systemctl")
+            .args(["start", "mariadb"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        // No init: launch it ourselves and let it daemonise.
+        let launcher = ["/usr/bin/mariadbd-safe", "/usr/bin/mysqld_safe"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.is_file());
+
+        match launcher {
+            Some(safe) => std::process::Command::new(safe)
+                .arg("--user=mysql")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok(),
+            None => std::process::Command::new(&server)
+                .arg("--user=mysql")
+                .arg("--daemonize")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok(),
+        }
+    };
+
+    if !started {
+        return "could not be started".to_string();
+    }
+
+    // Starting returns long before the socket accepts connections.
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (up, status) = server_status();
+        if up {
+            // Harden here as well as in the installer. The installer cannot do
+            // it while building an image — nothing is running yet — so without
+            // this a container would keep whatever defaults the distribution
+            // shipped, underneath the per-customer grants.
+            if let Err(err) = harden() {
+                crate::esw::log_line(&format!("database: could not harden: {err:#}"));
+            }
+            return status;
+        }
+    }
+
+    "started but did not accept connections in 15s".to_string()
+}
+
+/// Remove the defaults that sit underneath the per-customer grants.
+///
+/// An anonymous account or a world-readable `test` database would let anyone
+/// on the machine reach data regardless of who was granted what. Idempotent, so
+/// running it again costs nothing.
+pub fn harden() -> Result<()> {
+    run_sql(
+        "DELETE FROM mysql.global_priv WHERE User='';\n\
+         DELETE FROM mysql.global_priv \
+           WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');\n\
+         DROP DATABASE IF EXISTS test;\n\
+         DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';\n\
+         FLUSH PRIVILEGES;\n",
+    )?;
+    Ok(())
+}

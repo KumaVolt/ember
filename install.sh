@@ -301,9 +301,9 @@ chmod -R u+rwX,g+rwX "$PANEL_DIR/var" 2>/dev/null || true
 
 step "Setting up the database server"
 
-# MariaDB hosts customer databases. Isolation is its own grant system: a user
-# is granted rights on one database and cannot see any other, which holds even
-# for a customer connecting directly with a MySQL client.
+# MariaDB hosts customer databases. Isolation is its own grant system: a user is
+# granted rights on one database and cannot see any other, which holds even for
+# a customer connecting directly with a MySQL client.
 if command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; then
   say "a mariadb client is already present"
 else
@@ -328,11 +328,61 @@ else
   esac
 fi
 
-if command -v systemctl >/dev/null 2>&1 && command -v mariadbd >/dev/null 2>&1; then
-  if systemctl enable --now mariadb >/dev/null 2>&1; then
-    say "mariadb is running"
+if command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; then
+  MYSQL_BIN="$(command -v mariadb 2>/dev/null || command -v mysql)"
+
+  # Customer databases must not be reachable from the internet. A fresh install
+  # may listen on every interface depending on the distribution, so this is set
+  # rather than assumed.
+  for conf in /etc/mysql/mariadb.conf.d/99-ember.cnf /etc/my.cnf.d/99-ember.cnf; do
+    conf_dir="$(dirname "$conf")"
+    if [ -d "$conf_dir" ] && [ ! -f "$conf" ]; then
+      cat > "$conf" <<'CNFEOF'
+# Written by ember. Customer databases are reached over loopback only;
+# exposing them to the network would undo the per-user isolation.
+[mysqld]
+bind-address = 127.0.0.1
+skip-name-resolve
+CNFEOF
+      say "restricted mariadb to loopback ($conf)"
+    fi
+  done
+
+  if [ -z "$EMBER_SKIP_SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl enable --now mariadb >/dev/null 2>&1 ||
+       systemctl enable --now mysqld >/dev/null 2>&1; then
+      say "mariadb is running"
+    else
+      say "could not start mariadb; check: systemctl status mariadb"
+    fi
+
+    # Wait for the socket before touching it: systemd returns as soon as the
+    # unit is active, which is earlier than the server accepting connections.
+    i=0
+    while [ $i -lt 30 ]; do
+      "$MYSQL_BIN" --protocol=socket -u root -e "SELECT 1;" >/dev/null 2>&1 && break
+      i=$((i + 1))
+      sleep 1
+    done
+
+    if "$MYSQL_BIN" --protocol=socket -u root -e "SELECT 1;" >/dev/null 2>&1; then
+      # What mysql_secure_installation does, without the prompts. A default
+      # install ships an anonymous account and a world-writable test database;
+      # both would sit underneath the per-customer grants.
+      "$MYSQL_BIN" --protocol=socket -u root <<'SQLEOF' >/dev/null 2>&1 || true
+DELETE FROM mysql.global_priv WHERE User='';
+DELETE FROM mysql.global_priv WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
+SQLEOF
+      say "removed anonymous accounts, the test database and remote root"
+      say "server: $("$MYSQL_BIN" --protocol=socket -u root -N -B -e 'SELECT VERSION();' 2>/dev/null)"
+    else
+      say "mariadb did not accept connections in time; check systemctl status mariadb"
+    fi
   else
-    say "could not start mariadb; check: systemctl status mariadb"
+    say "not started here; ember starts it on boot when it is installed"
   fi
 fi
 
