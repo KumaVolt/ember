@@ -158,6 +158,114 @@ fn default_page(domain: &str, branding: &crate::config::Branding) -> String {
     )
 }
 
+/// Per-domain hosting configuration: what is served, and how.
+///
+/// These are the knobs that change the generated vhost rather than PHP. Kept
+/// beside the generator so a setting can never drift from the config it is
+/// supposed to produce.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct HostingSettings {
+    /// Relative to the domain root. A Symfony or Laravel site points at
+    /// `webroot/public`.
+    pub document_root: String,
+    /// `www`, `root`, or `none` for no redirect between the two.
+    pub preferred_domain: String,
+    /// Redirect plain HTTP to HTTPS. Only meaningful once a certificate exists.
+    pub force_https: bool,
+    /// Serve the generated 403/404/500 pages.
+    pub error_documents: bool,
+    /// Whether the owning customer has a login shell.
+    pub ssh_access: bool,
+    /// Serve a suspension notice instead of the site.
+    pub suspended: bool,
+    /// Appended to the server block verbatim.
+    pub additional_directives: String,
+}
+
+impl Default for HostingSettings {
+    fn default() -> Self {
+        Self {
+            document_root: "webroot".into(),
+            preferred_domain: "none".into(),
+            // Off until a certificate exists, or the site redirects to a port
+            // that refuses the connection.
+            force_https: false,
+            error_documents: true,
+            // Off by default: a hosting account does not need a shell, and one
+            // is a much larger surface than serving files.
+            ssh_access: false,
+            suspended: false,
+            additional_directives: String::new(),
+        }
+    }
+}
+
+impl HostingSettings {
+    pub fn validate(&self) -> Result<()> {
+        let root = self.document_root.trim().trim_matches('/');
+        if root.is_empty() {
+            bail!("document root cannot be empty");
+        }
+        // It becomes a path under the domain root, so traversal is refused
+        // rather than resolved.
+        if root.split('/').any(|part| part == ".." || part.is_empty()) {
+            bail!("document root must be a simple path inside the domain directory");
+        }
+        if !root
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+        {
+            bail!("document root may use letters, digits, '.', '_', '-' and '/' only");
+        }
+        if !matches!(self.preferred_domain.as_str(), "www" | "root" | "none") {
+            bail!("preferred domain must be www, root or none");
+        }
+        Ok(())
+    }
+
+    /// The absolute document root for a domain.
+    pub fn docroot_for(&self, domain_root: &str) -> String {
+        format!(
+            "{}/{}",
+            domain_root,
+            self.document_root.trim().trim_matches('/')
+        )
+    }
+}
+
+/// Give or remove a shell for the customer's account.
+///
+/// Shell access is a much larger surface than serving files, so it is a
+/// deliberate switch rather than something that comes with an account.
+pub fn set_shell(cfg: &Config, user: &str, enabled: bool) -> Result<String> {
+    cfg.require_host_mode(&format!("change the shell for {user}"))?;
+
+    let shell = if enabled {
+        ["/bin/bash", "/bin/sh"]
+            .iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .unwrap_or(&"/bin/sh")
+            .to_string()
+    } else {
+        ["/usr/sbin/nologin", "/sbin/nologin", "/bin/false"]
+            .iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .unwrap_or(&"/bin/false")
+            .to_string()
+    };
+
+    let status = std::process::Command::new("usermod")
+        .args(["-s", &shell, user])
+        .status()
+        .context("could not run usermod")?;
+
+    if !status.success() {
+        bail!("could not change the shell for {user}");
+    }
+    Ok(format!("shell for {user} set to {shell}"))
+}
+
 /// Create the directory tree for a domain and hand it to its owner.
 ///
 /// Gated on host mode: laying out `/var/www` is a change to the machine, so it
@@ -243,6 +351,26 @@ pub fn deprovision(cfg: &Config, domain: &Domain) -> Result<()> {
 }
 
 /// Look up a system account's uid and gid.
+/// The group the web server runs as, so it can read what it serves.
+fn web_group_id() -> Option<u32> {
+    for group in ["www-data", "nginx", "apache", "http"] {
+        let Ok(cname) = std::ffi::CString::new(group) else {
+            continue;
+        };
+        // SAFETY: getgrnam takes a NUL-terminated string and returns a pointer
+        // we null-check before reading.
+        let gid = unsafe {
+            let entry = libc::getgrnam(cname.as_ptr());
+            if entry.is_null() {
+                continue;
+            }
+            (*entry).gr_gid
+        };
+        return Some(gid);
+    }
+    None
+}
+
 fn ids_for(user: &str) -> Result<(u32, u32)> {
     let cname = CString::new(user).context("invalid username")?;
     // SAFETY: getpwnam takes a NUL-terminated string and returns a pointer we
@@ -256,14 +384,21 @@ fn ids_for(user: &str) -> Result<(u32, u32)> {
     }
 }
 
-/// Give the tree to the customer, and make the modes sane.
+/// Give the tree to the customer, with the web server's group.
 ///
-/// `webroot` is group-readable so the web server can serve it; `logs` and
-/// `conf` are not, because they are nobody else's business.
+/// The group matters as much as the owner. PHP runs as the customer through
+/// their own pool, but *static* files are read by the web server process, which
+/// runs as `www-data`. Owned `customer:customer` at 0750 the web server cannot
+/// even traverse the directory, and every request returns 403.
+///
+/// `customer:www-data` at 0750 gives the customer full control, the web server
+/// read and traverse, and everyone else — including every other customer —
+/// nothing. `private` stays 0700, so the web server cannot read it either.
 fn apply_ownership(root: &Path, owner: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let (uid, gid) = ids_for(owner)?;
+    let (uid, _) = ids_for(owner)?;
+    let gid = web_group_id().unwrap_or_else(|| ids_for(owner).map(|(_, g)| g).unwrap_or(0));
     chown_recursive(root, uid, gid)?;
 
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o750))?;
@@ -344,194 +479,404 @@ impl WebServer {
     /// customer's account — so a request for this domain executes with exactly
     /// that customer's privileges and no more.
     ///
-    /// When a certificate exists the plain-HTTP server becomes a redirect and
-    /// the site moves to 443. Two things must survive that redirect: the ACME
-    /// challenge path, or renewal breaks the moment TLS is enabled.
-    pub fn config_for(self, domain: &Domain) -> String {
+    /// Both servers are generated from the same settings, so switching a domain
+    /// between them changes how it is served and nothing about how it behaves.
+    pub fn config_for(self, domain: &Domain, settings: &HostingSettings) -> String {
         let name = &domain.name;
-        let docroot = &domain.docroot;
+        let docroot = settings.docroot_for(&domain.root);
         let logs = format!("{}/logs", domain.root);
         let errors = format!("{}/error_docs", domain.root);
         let socket = pool_socket_for(name);
+        // Only redirect to HTTPS once there is a certificate to redirect to.
         let tls = crate::cert::has_certificate(name);
+        let force_https = settings.force_https && tls;
         let fullchain = crate::cert::fullchain_path(name);
         let privkey = crate::cert::privkey_path(name);
 
         match self {
-            Self::Nginx => {
-                let acme = format!(
-                    "\x20   # Must stay reachable over plain HTTP, and must be matched\n\
-                     \x20   # before the dotfile rule below, or renewal fails.\n\
-                     \x20   location ^~ /.well-known/acme-challenge/ {{\n\
-                     \x20       root {docroot};\n\
-                     \x20       default_type \"text/plain\";\n\
-                     \x20   }}\n"
-                );
-
-                let site_body = format!(
-                    "\x20   root {docroot};\n\
-                     \x20   index index.php index.html;\n\
-                     \n\
-                     \x20   access_log {logs}/access.log;\n\
-                     \x20   error_log  {logs}/error.log;\n\
-                     \n\
-                     {acme}\
-                     \n\
-                     \x20   location / {{\n\
-                     \x20       try_files $uri $uri/ /index.php$is_args$args;\n\
-                     \x20   }}\n\
-                     \n\
-                     \x20   location ~ \\.php$ {{\n\
-                     \x20       include fastcgi_params;\n\
-                     \x20       fastcgi_pass unix:{socket};\n\
-                     \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n\
-                     \x20       fastcgi_param DOCUMENT_ROOT $document_root;\n\
-                     \x20       fastcgi_param HTTPS $https_flag;\n\
-                     \x20   }}\n\
-                     \n\
-                     \x20   # The pages written at provisioning, so a visitor never\n\
-                     \x20   # sees the web server's default error page.\n\
-                     \x20   error_page 403 /__errors/403.html;\n\
-                     \x20   error_page 404 /__errors/404.html;\n\
-                     \x20   error_page 500 502 503 504 /__errors/500.html;\n\
-                     \x20   location ^~ /__errors/ {{\n\
-                     \x20       internal;\n\
-                     \x20       alias {errors}/;\n\
-                     \x20   }}\n\
-                     \n\
-                     \x20   # Dotfiles are configuration, not content.\n\
-                     \x20   location ~ /\\. {{ deny all; }}\n"
-                );
-
-                if tls {
-                    format!(
-                        "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
-                         map $scheme $https_flag {{ default off; https on; }}\n\
-                         \n\
-                         server {{\n\
-                         \x20   listen 80;\n\
-                         \x20   listen [::]:80;\n\
-                         \x20   server_name {name} www.{name};\n\
-                         \n\
-                         {acme}\
-                         \n\
-                         \x20   location / {{ return 301 https://$host$request_uri; }}\n\
-                         }}\n\
-                         \n\
-                         server {{\n\
-                         \x20   listen 443 ssl;\n\
-                         \x20   listen [::]:443 ssl;\n\
-                         \x20   http2 on;\n\
-                         \x20   server_name {name} www.{name};\n\
-                         \n\
-                         \x20   ssl_certificate     {fullchain};\n\
-                         \x20   ssl_certificate_key {privkey};\n\
-                         \x20   ssl_protocols TLSv1.2 TLSv1.3;\n\
-                         \x20   ssl_prefer_server_ciphers off;\n\
-                         \x20   ssl_session_cache shared:SSL:10m;\n\
-                         \n\
-                         {site_body}\
-                         }}\n",
-                        fullchain = fullchain.display(),
-                        privkey = privkey.display(),
-                    )
-                } else {
-                    format!(
-                        "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
-                         map $scheme $https_flag {{ default off; https on; }}\n\
-                         \n\
-                         server {{\n\
-                         \x20   listen 80;\n\
-                         \x20   listen [::]:80;\n\
-                         \x20   server_name {name} www.{name};\n\
-                         \n\
-                         {site_body}\
-                         }}\n"
-                    )
-                }
-            }
-
-            Self::Apache => {
-                let acme = format!(
-                    "\x20   # Must stay reachable over plain HTTP for renewal.\n\
-                     \x20   Alias /.well-known/acme-challenge/ {docroot}/.well-known/acme-challenge/\n\
-                     \x20   <Directory {docroot}/.well-known/acme-challenge/>\n\
-                     \x20       Require all granted\n\
-                     \x20   </Directory>\n"
-                );
-
-                let site_body = format!(
-                    "\x20   DocumentRoot {docroot}\n\
-                     \n\
-                     \x20   CustomLog {logs}/access.log combined\n\
-                     \x20   ErrorLog  {logs}/error.log\n\
-                     \n\
-                     {acme}\
-                     \n\
-                     \x20   <Directory {docroot}>\n\
-                     \x20       AllowOverride All\n\
-                     \x20       Require all granted\n\
-                     \x20   </Directory>\n\
-                     \n\
-                     \x20   <FilesMatch \\.php$>\n\
-                     \x20       SetHandler \"proxy:unix:{socket}|fcgi://localhost\"\n\
-                     \x20   </FilesMatch>\n\
-                     \n\
-                     \x20   Alias /__errors/ {errors}/\n\
-                     \x20   <Directory {errors}>\n\
-                     \x20       Require all granted\n\
-                     \x20   </Directory>\n\
-                     \x20   ErrorDocument 403 /__errors/403.html\n\
-                     \x20   ErrorDocument 404 /__errors/404.html\n\
-                     \x20   ErrorDocument 500 /__errors/500.html\n\
-                     \n\
-                     \x20   <FilesMatch \"^\\.\">\n\
-                     \x20       Require all denied\n\
-                     \x20   </FilesMatch>\n"
-                );
-
-                if tls {
-                    format!(
-                        "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
-                         <VirtualHost *:80>\n\
-                         \x20   ServerName {name}\n\
-                         \x20   ServerAlias www.{name}\n\
-                         \x20   DocumentRoot {docroot}\n\
-                         \n\
-                         {acme}\
-                         \n\
-                         \x20   RewriteEngine On\n\
-                         \x20   RewriteCond %{{REQUEST_URI}} !^/\\.well-known/acme-challenge/\n\
-                         \x20   RewriteRule ^(.*)$ https://%{{HTTP_HOST}}$1 [R=301,L]\n\
-                         </VirtualHost>\n\
-                         \n\
-                         <VirtualHost *:443>\n\
-                         \x20   ServerName {name}\n\
-                         \x20   ServerAlias www.{name}\n\
-                         \n\
-                         \x20   SSLEngine on\n\
-                         \x20   SSLCertificateFile    {fullchain}\n\
-                         \x20   SSLCertificateKeyFile {privkey}\n\
-                         \x20   SSLProtocol -all +TLSv1.2 +TLSv1.3\n\
-                         \n\
-                         {site_body}\
-                         </VirtualHost>\n",
-                        fullchain = fullchain.display(),
-                        privkey = privkey.display(),
-                    )
-                } else {
-                    format!(
-                        "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
-                         <VirtualHost *:80>\n\
-                         \x20   ServerName {name}\n\
-                         \x20   ServerAlias www.{name}\n\
-                         \n\
-                         {site_body}\
-                         </VirtualHost>\n"
-                    )
-                }
-            }
+            Self::Nginx => nginx_config(NginxParts {
+                name,
+                docroot: &docroot,
+                logs: &logs,
+                errors: &errors,
+                socket: &socket,
+                tls,
+                force_https,
+                fullchain: &fullchain.to_string_lossy(),
+                privkey: &privkey.to_string_lossy(),
+                settings,
+            }),
+            Self::Apache => apache_config(ApacheParts {
+                name,
+                docroot: &docroot,
+                logs: &logs,
+                errors: &errors,
+                socket: &socket,
+                tls,
+                force_https,
+                fullchain: &fullchain.to_string_lossy(),
+                privkey: &privkey.to_string_lossy(),
+                settings,
+            }),
         }
+    }
+}
+
+struct NginxParts<'a> {
+    name: &'a str,
+    docroot: &'a str,
+    logs: &'a str,
+    errors: &'a str,
+    socket: &'a str,
+    tls: bool,
+    force_https: bool,
+    fullchain: &'a str,
+    privkey: &'a str,
+    settings: &'a HostingSettings,
+}
+
+/// The redirect between www and the bare name, if one was asked for.
+fn preferred_redirect_nginx(name: &str, preference: &str) -> String {
+    match preference {
+        "www" => format!(
+            "\x20   if ($host = {name}) {{ return 301 $scheme://www.{name}$request_uri; }}\n"
+        ),
+        "root" => format!(
+            "\x20   if ($host = www.{name}) {{ return 301 $scheme://{name}$request_uri; }}\n"
+        ),
+        _ => String::new(),
+    }
+}
+
+fn nginx_config(p: NginxParts<'_>) -> String {
+    let (name, docroot, logs, errors, socket) = (p.name, p.docroot, p.logs, p.errors, p.socket);
+
+    // Must be reachable over plain HTTP and matched before the dotfile rule,
+    // or certificate renewal fails once TLS is on.
+    let acme = format!(
+        "\x20   location ^~ /.well-known/acme-challenge/ {{\n\
+         \x20       root {docroot};\n\
+         \x20       default_type \"text/plain\";\n\
+         \x20   }}\n"
+    );
+
+    if p.settings.suspended {
+        return format!(
+            "# Generated by ember for {name}. Suspended.\n\
+             server {{\n\
+             \x20   listen 80;\n\
+             \x20   listen [::]:80;\n\
+             \x20   server_name {name} www.{name};\n\
+             \n\
+             {acme}\
+             \n\
+             \x20   # 503 rather than 404: the site exists, it is turned off.\n\
+             \x20   location / {{ return 503; }}\n\
+             \x20   error_page 503 /__suspended.html;\n\
+             \x20   location = /__suspended.html {{ internal; root {errors}; }}\n\
+             }}\n"
+        );
+    }
+
+    let error_pages = if p.settings.error_documents {
+        format!(
+            "\x20   error_page 403 /__errors/403.html;\n\
+             \x20   error_page 404 /__errors/404.html;\n\
+             \x20   error_page 500 502 503 504 /__errors/500.html;\n\
+             \x20   location ^~ /__errors/ {{ internal; alias {errors}/; }}\n"
+        )
+    } else {
+        String::new()
+    };
+
+    let extra = if p.settings.additional_directives.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\x20   # Operator directives.\n{}\n",
+            p.settings
+                .additional_directives
+                .trim()
+                .lines()
+                .map(|line| format!("\x20   {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    let body = format!(
+        "\x20   root {docroot};\n\
+         \x20   index index.php index.html;\n\
+         \n\
+         \x20   access_log {logs}/access.log;\n\
+         \x20   error_log  {logs}/error.log;\n\
+         \n\
+         {acme}\
+         {redirect}\
+         \n\
+         \x20   location / {{\n\
+         \x20       try_files $uri $uri/ /index.php$is_args$args;\n\
+         \x20   }}\n\
+         \n\
+         \x20   location ~ \\.php$ {{\n\
+         \x20       include fastcgi_params;\n\
+         \x20       fastcgi_pass unix:{socket};\n\
+         \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n\
+         \x20       fastcgi_param DOCUMENT_ROOT $document_root;\n\
+         \x20       fastcgi_param HTTPS $https_flag;\n\
+         \x20   }}\n\
+         \n\
+         {error_pages}\
+         \x20   # Dotfiles are configuration, not content.\n\
+         \x20   location ~ /\\. {{ deny all; }}\n\
+         {extra}",
+        redirect = preferred_redirect_nginx(name, &p.settings.preferred_domain),
+    );
+
+    let header = format!(
+        "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
+         map $scheme $https_flag {{ default off; https on; }}\n\n"
+    );
+
+    if p.tls && p.force_https {
+        format!(
+            "{header}\
+             server {{\n\
+             \x20   listen 80;\n\
+             \x20   listen [::]:80;\n\
+             \x20   server_name {name} www.{name};\n\
+             \n\
+             {acme}\
+             \n\
+             \x20   location / {{ return 301 https://$host$request_uri; }}\n\
+             }}\n\n\
+             server {{\n\
+             \x20   listen 443 ssl;\n\
+             \x20   listen [::]:443 ssl;\n\
+             \x20   http2 on;\n\
+             \x20   server_name {name} www.{name};\n\
+             \n\
+             \x20   ssl_certificate     {fullchain};\n\
+             \x20   ssl_certificate_key {privkey};\n\
+             \x20   ssl_protocols TLSv1.2 TLSv1.3;\n\
+             \x20   ssl_session_cache shared:SSL:10m;\n\
+             \n\
+             {body}\
+             }}\n",
+            fullchain = p.fullchain,
+            privkey = p.privkey,
+        )
+    } else if p.tls {
+        // A certificate but no forced redirect: serve both.
+        format!(
+            "{header}\
+             server {{\n\
+             \x20   listen 80;\n\
+             \x20   listen [::]:80;\n\
+             \x20   server_name {name} www.{name};\n\
+             \n\
+             {body}\
+             }}\n\n\
+             server {{\n\
+             \x20   listen 443 ssl;\n\
+             \x20   listen [::]:443 ssl;\n\
+             \x20   http2 on;\n\
+             \x20   server_name {name} www.{name};\n\
+             \n\
+             \x20   ssl_certificate     {fullchain};\n\
+             \x20   ssl_certificate_key {privkey};\n\
+             \x20   ssl_protocols TLSv1.2 TLSv1.3;\n\
+             \n\
+             {body}\
+             }}\n",
+            fullchain = p.fullchain,
+            privkey = p.privkey,
+        )
+    } else {
+        format!(
+            "{header}\
+             server {{\n\
+             \x20   listen 80;\n\
+             \x20   listen [::]:80;\n\
+             \x20   server_name {name} www.{name};\n\
+             \n\
+             {body}\
+             }}\n"
+        )
+    }
+}
+
+struct ApacheParts<'a> {
+    name: &'a str,
+    docroot: &'a str,
+    logs: &'a str,
+    errors: &'a str,
+    socket: &'a str,
+    tls: bool,
+    force_https: bool,
+    fullchain: &'a str,
+    privkey: &'a str,
+    settings: &'a HostingSettings,
+}
+
+fn apache_config(p: ApacheParts<'_>) -> String {
+    let (name, docroot, logs, errors, socket) = (p.name, p.docroot, p.logs, p.errors, p.socket);
+
+    let acme = format!(
+        "\x20   Alias /.well-known/acme-challenge/ {docroot}/.well-known/acme-challenge/\n\
+         \x20   <Directory {docroot}/.well-known/acme-challenge/>\n\
+         \x20       Require all granted\n\
+         \x20   </Directory>\n"
+    );
+
+    if p.settings.suspended {
+        return format!(
+            "# Generated by ember for {name}. Suspended.\n\
+             <VirtualHost *:80>\n\
+             \x20   ServerName {name}\n\
+             \x20   ServerAlias www.{name}\n\
+             \x20   DocumentRoot {docroot}\n\
+             \n\
+             {acme}\
+             \n\
+             \x20   RewriteEngine On\n\
+             \x20   RewriteCond %{{REQUEST_URI}} !^/\\.well-known/acme-challenge/\n\
+             \x20   RewriteRule ^ - [R=503,L]\n\
+             \x20   ErrorDocument 503 /__errors/503.html\n\
+             \x20   Alias /__errors/ {errors}/\n\
+             </VirtualHost>\n"
+        );
+    }
+
+    let error_docs = if p.settings.error_documents {
+        format!(
+            "\x20   Alias /__errors/ {errors}/\n\
+             \x20   <Directory {errors}>\n\
+             \x20       Require all granted\n\
+             \x20   </Directory>\n\
+             \x20   ErrorDocument 403 /__errors/403.html\n\
+             \x20   ErrorDocument 404 /__errors/404.html\n\
+             \x20   ErrorDocument 500 /__errors/500.html\n"
+        )
+    } else {
+        String::new()
+    };
+
+    let redirect = match p.settings.preferred_domain.as_str() {
+        "www" => format!(
+            "\x20   RewriteEngine On\n\
+             \x20   RewriteCond %{{HTTP_HOST}} ^{name}$ [NC]\n\
+             \x20   RewriteRule ^(.*)$ %{{REQUEST_SCHEME}}://www.{name}$1 [R=301,L]\n"
+        ),
+        "root" => format!(
+            "\x20   RewriteEngine On\n\
+             \x20   RewriteCond %{{HTTP_HOST}} ^www\\.{name}$ [NC]\n\
+             \x20   RewriteRule ^(.*)$ %{{REQUEST_SCHEME}}://{name}$1 [R=301,L]\n"
+        ),
+        _ => String::new(),
+    };
+
+    let extra = if p.settings.additional_directives.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\x20   # Operator directives.\n{}\n",
+            p.settings
+                .additional_directives
+                .trim()
+                .lines()
+                .map(|line| format!("\x20   {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    let body = format!(
+        "\x20   DocumentRoot {docroot}\n\
+         \n\
+         \x20   CustomLog {logs}/access.log combined\n\
+         \x20   ErrorLog  {logs}/error.log\n\
+         \n\
+         {acme}\
+         {redirect}\
+         \n\
+         \x20   <Directory {docroot}>\n\
+         \x20       AllowOverride All\n\
+         \x20       Require all granted\n\
+         \x20   </Directory>\n\
+         \n\
+         \x20   <FilesMatch \\.php$>\n\
+         \x20       SetHandler \"proxy:unix:{socket}|fcgi://localhost\"\n\
+         \x20   </FilesMatch>\n\
+         \n\
+         {error_docs}\
+         \x20   <FilesMatch \"^\\\\.\">\n\
+         \x20       Require all denied\n\
+         \x20   </FilesMatch>\n\
+         {extra}"
+    );
+
+    if p.tls && p.force_https {
+        format!(
+            "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
+             <VirtualHost *:80>\n\
+             \x20   ServerName {name}\n\
+             \x20   ServerAlias www.{name}\n\
+             \x20   DocumentRoot {docroot}\n\
+             \n\
+             {acme}\
+             \n\
+             \x20   RewriteEngine On\n\
+             \x20   RewriteCond %{{REQUEST_URI}} !^/\\.well-known/acme-challenge/\n\
+             \x20   RewriteRule ^(.*)$ https://%{{HTTP_HOST}}$1 [R=301,L]\n\
+             </VirtualHost>\n\n\
+             <VirtualHost *:443>\n\
+             \x20   ServerName {name}\n\
+             \x20   ServerAlias www.{name}\n\
+             \n\
+             \x20   SSLEngine on\n\
+             \x20   SSLCertificateFile    {fullchain}\n\
+             \x20   SSLCertificateKeyFile {privkey}\n\
+             \x20   SSLProtocol -all +TLSv1.2 +TLSv1.3\n\
+             \n\
+             {body}\
+             </VirtualHost>\n",
+            fullchain = p.fullchain,
+            privkey = p.privkey,
+        )
+    } else if p.tls {
+        format!(
+            "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
+             <VirtualHost *:80>\n\
+             \x20   ServerName {name}\n\
+             \x20   ServerAlias www.{name}\n\
+             \n\
+             {body}\
+             </VirtualHost>\n\n\
+             <VirtualHost *:443>\n\
+             \x20   ServerName {name}\n\
+             \x20   ServerAlias www.{name}\n\
+             \n\
+             \x20   SSLEngine on\n\
+             \x20   SSLCertificateFile    {fullchain}\n\
+             \x20   SSLCertificateKeyFile {privkey}\n\
+             \x20   SSLProtocol -all +TLSv1.2 +TLSv1.3\n\
+             \n\
+             {body}\
+             </VirtualHost>\n",
+            fullchain = p.fullchain,
+            privkey = p.privkey,
+        )
+    } else {
+        format!(
+            "# Generated by ember for {name}. Do not edit — regenerated on change.\n\
+             <VirtualHost *:80>\n\
+             \x20   ServerName {name}\n\
+             \x20   ServerAlias www.{name}\n\
+             \n\
+             {body}\
+             </VirtualHost>\n"
+        )
     }
 }
 
@@ -551,15 +896,16 @@ pub fn pool_socket_for(domain: &str) -> String {
 ///
 /// Ember always writes its own copy so the config is inspectable even when the
 /// web server is not installed — which is the normal case in a container.
-pub fn write_config(cfg: &Config, domain: &Domain) -> Result<PathBuf> {
+pub fn write_config(cfg: &Config, domain: &Domain, settings: &HostingSettings) -> Result<PathBuf> {
     cfg.require_host_mode(&format!("write the vhost config for {}", domain.name))?;
+    settings.validate()?;
 
     let server = WebServer::parse(&domain.webserver)?;
     let conf_dir = PathBuf::from(&domain.root).join("conf");
     std::fs::create_dir_all(&conf_dir)?;
 
     let path = conf_dir.join(format!("{}.conf", server.as_str()));
-    std::fs::write(&path, server.config_for(domain))
+    std::fs::write(&path, server.config_for(domain, settings))
         .with_context(|| format!("could not write {}", path.display()))?;
 
     if let Some(sites) = server.sites_dir() {

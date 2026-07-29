@@ -54,6 +54,9 @@ pub struct Domain {
     /// Serialised `PhpSettings`; absent means the defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub php_settings: Option<String>,
+    /// Serialised `HostingSettings`; absent means the defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosting_settings: Option<String>,
 }
 
 pub fn database_file() -> Result<PathBuf> {
@@ -137,6 +140,14 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_php_settings {
         conn.execute_batch("ALTER TABLE domains ADD COLUMN php_settings TEXT;")
             .context("could not add php_settings to domains")?;
+    }
+
+    let has_hosting = conn
+        .prepare("SELECT 1 FROM pragma_table_info('domains') WHERE name = 'hosting_settings'")?
+        .exists([])?;
+    if !has_hosting {
+        conn.execute_batch("ALTER TABLE domains ADD COLUMN hosting_settings TEXT;")
+            .context("could not add hosting_settings to domains")?;
     }
 
     let has_domain_id = conn
@@ -289,7 +300,8 @@ pub fn delete_customer(conn: &Connection, id: i64) -> Result<Customer> {
 
 pub fn list_domains(conn: &Connection, customer_id: Option<i64>) -> Result<Vec<Domain>> {
     let sql = "SELECT d.id, d.customer_id, d.name, d.root, d.docroot, d.webserver,
-                      d.php_version, d.status, d.created_at, c.username, d.php_settings
+                      d.php_version, d.status, d.created_at, c.username, d.php_settings,
+                      d.hosting_settings
                  FROM domains d
                  JOIN customers c ON c.id = d.customer_id
                 WHERE (?1 IS NULL OR d.customer_id = ?1)
@@ -302,7 +314,8 @@ pub fn list_domains(conn: &Connection, customer_id: Option<i64>) -> Result<Vec<D
 pub fn find_domain(conn: &Connection, id: i64) -> Result<Option<Domain>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.customer_id, d.name, d.root, d.docroot, d.webserver,
-                d.php_version, d.status, d.created_at, c.username, d.php_settings
+                d.php_version, d.status, d.created_at, c.username, d.php_settings,
+                d.hosting_settings
            FROM domains d
            JOIN customers c ON c.id = d.customer_id
           WHERE d.id = ?1",
@@ -323,6 +336,7 @@ fn row_to_domain(row: &rusqlite::Row<'_>) -> rusqlite::Result<Domain> {
         created_at: row.get::<_, i64>(8)? as u64,
         customer_username: row.get(9)?,
         php_settings: row.get(10)?,
+        hosting_settings: row.get(11)?,
     })
 }
 
@@ -508,6 +522,20 @@ pub fn update_php(
     conn.execute(
         "UPDATE domains SET php_settings = ?2, php_version = ?3 WHERE id = ?1",
         params![id, settings_json, version],
+    )?;
+    find_domain(conn, id)?.context("no such domain")
+}
+
+/// Store a domain's hosting settings, and the document root they imply.
+pub fn update_hosting(
+    conn: &Connection,
+    id: i64,
+    settings_json: &str,
+    docroot: &str,
+) -> Result<Domain> {
+    conn.execute(
+        "UPDATE domains SET hosting_settings = ?2, docroot = ?3 WHERE id = ?1",
+        params![id, settings_json, docroot],
     )?;
     find_domain(conn, id)?.context("no such domain")
 }

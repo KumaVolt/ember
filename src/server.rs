@@ -898,6 +898,15 @@ async fn upload(
     ))
 }
 
+/// A domain's hosting settings, or the defaults when it has none.
+fn hosting_of(domain: &store::Domain) -> vhost::HostingSettings {
+    domain
+        .hosting_settings
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default()
+}
+
 /// Overlay submitted fields onto the stored settings.
 ///
 /// A form that posts only what it shows must not reset the rest, so absent keys
@@ -1152,7 +1161,7 @@ async fn resource_api(
                     Ok(message) => warnings.push(message),
                     Err(err) => warnings.push(format!("php pool not created: {err}")),
                 }
-                match vhost::write_config(&cfg, &domain) {
+                match vhost::write_config(&cfg, &domain, &hosting_of(&domain)) {
                     Ok(path) => warnings.push(format!("config written to {}", path.display())),
                     Err(err) => warnings.push(format!("config not written: {err}")),
                 }
@@ -1670,6 +1679,106 @@ async fn resource_api(
             }
         }
 
+        // --- hosting settings ----------------------------------------------
+        (_, r) if r.starts_with("/api/v1/domains/") && r.ends_with("/hosting") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/domains/")
+                .trim_end_matches("/hosting")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+
+            let conn = store::open()?;
+            let Some(domain) = store::find_domain(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain")));
+            };
+            let stored = hosting_of(&domain);
+
+            match *method {
+                Method::GET => api_json(
+                    StatusCode::OK,
+                    serde_json::json!({
+                        "settings": stored,
+                        "has_certificate": cert::has_certificate(&domain.name),
+                        "webserver": domain.webserver,
+                        "document_root": domain.docroot,
+                    }),
+                ),
+
+                Method::POST => {
+                    let body = json_body(request).await?;
+                    let settings: vhost::HostingSettings = match serde_json::from_value(
+                        merge_settings(serde_json::to_value(&stored)?, body.clone()),
+                    ) {
+                        Ok(settings) => settings,
+                        Err(err) => {
+                            return Ok(Some(api_error(
+                                StatusCode::BAD_REQUEST,
+                                &format!("could not read those settings: {err}"),
+                            )));
+                        }
+                    };
+
+                    if let Err(err) = settings.validate() {
+                        return Ok(Some(api_error(StatusCode::BAD_REQUEST, &err.to_string())));
+                    }
+
+                    // Switching web server is part of hosting rather than a
+                    // separate action; the vhost is regenerated either way.
+                    if let Some(server) = field(&body, "webserver")
+                        && vhost::WebServer::parse(server).is_ok()
+                        && server != domain.webserver
+                    {
+                        let _ = vhost::remove_config(&domain);
+                        conn.execute(
+                            "UPDATE domains SET webserver = ?2 WHERE id = ?1",
+                            rusqlite::params![id, server],
+                        )?;
+                    }
+
+                    let docroot = settings.docroot_for(&domain.root);
+                    let json = serde_json::to_string(&settings)?;
+                    let updated = store::update_hosting(&conn, id, &json, &docroot)?;
+
+                    let mut notes = Vec::new();
+                    if cfg.mode == config::Mode::Host {
+                        // The document root may not exist yet if it was just
+                        // pointed somewhere new.
+                        if let Err(err) = std::fs::create_dir_all(&docroot) {
+                            notes.push(format!("could not create {docroot}: {err}"));
+                        }
+                        match vhost::write_config(&cfg, &updated, &settings) {
+                            Ok(path) => notes.push(format!("vhost written: {}", path.display())),
+                            Err(err) => notes.push(format!("vhost not written: {err}")),
+                        }
+                        if let Ok(server) = vhost::WebServer::parse(&updated.webserver) {
+                            notes.push(vhost::reload(server)?);
+                        }
+                        if let Some(owner) = &updated.customer_username {
+                            match vhost::set_shell(&cfg, owner, settings.ssh_access) {
+                                Ok(message) => notes.push(message),
+                                Err(err) => notes.push(format!("shell unchanged: {err}")),
+                            }
+                        }
+                    } else {
+                        notes.push("isolated mode: saved but nothing written".into());
+                    }
+
+                    esw::log_line(&format!(
+                        "[{}] {actor} changed hosting settings for {}",
+                        daemon::now_secs(),
+                        updated.name
+                    ));
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({ "settings": settings, "notes": notes }),
+                    )
+                }
+
+                _ => api_error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+            }
+        }
+
         // --- php settings --------------------------------------------------
         (_, r) if r.starts_with("/api/v1/domains/") && r.ends_with("/php") => {
             let id: i64 = r
@@ -1816,7 +1925,7 @@ async fn resource_api(
                     // The vhost has to be rewritten: it only gains its TLS
                     // block once the certificate is actually on disk.
                     let mut notes = vec![];
-                    match vhost::write_config(&cfg, &domain) {
+                    match vhost::write_config(&cfg, &domain, &hosting_of(&domain)) {
                         Ok(path) => notes.push(format!("vhost rewritten: {}", path.display())),
                         Err(err) => notes.push(format!("vhost not rewritten: {err}")),
                     }
@@ -1860,7 +1969,7 @@ async fn resource_api(
             };
             let output = cert::remove(&cfg, &domain.name)?;
             // Back to plain HTTP, or nginx would reference files that are gone.
-            let _ = vhost::write_config(&cfg, &domain);
+            let _ = vhost::write_config(&cfg, &domain, &hosting_of(&domain));
             if let Ok(server) = vhost::WebServer::parse(&domain.webserver) {
                 let _ = vhost::reload(server);
             }

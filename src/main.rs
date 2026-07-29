@@ -386,7 +386,12 @@ fn certificates(command: CertCommand) -> Result<()> {
             println!("{output}");
 
             // Only now does the vhost gain its TLS block.
-            let path = vhost::write_config(&cfg, &record)?;
+            let hosting: vhost::HostingSettings = record
+                .hosting_settings
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default();
+            let path = vhost::write_config(&cfg, &record, &hosting)?;
             println!("  vhost rewritten: {}", path.display());
             if let Ok(server) = vhost::WebServer::parse(&record.webserver) {
                 println!("  {}", vhost::reload(server)?);

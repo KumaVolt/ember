@@ -1,0 +1,122 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Hosting: {{ domain.name }}{% endblock %}
+
+{% macro flag(name, label, value, hint) %}
+    <label style="display:flex;gap:.5rem;align-items:flex-start;font-weight:400;margin:0 0 .8rem">
+        <input type="checkbox" name="{{ name }}" value="1" {{ value ? 'checked' }}
+               style="width:auto;margin:.25rem 0 0">
+        <span>
+            {{ label }}
+            {% if hint %}<br><span style="color:var(--text-muted);font-size:.78rem">{{ hint }}</span>{% endif %}
+        </span>
+    </label>
+{% endmacro %}
+
+{% block body %}
+    {% set h = hosting.settings %}
+
+    <header class="page">
+        <div>
+            <h1>Hosting settings</h1>
+            <p><strong>{{ domain.name }}</strong> ·
+               <span class="mono">{{ hosting.document_root }}</span></p>
+        </div>
+        <a class="btn ghost" href="{{ path('domains') }}">Back to domains</a>
+    </header>
+
+    <form method="post" action="{{ path('domain_hosting_save', {id: domain.id}) }}">
+        <div class="card">
+            <h2>Web server</h2>
+            <div class="body">
+                <div class="row">
+                    <div>
+                        <label for="webserver">Served by</label>
+                        <select id="webserver" name="webserver">
+                            <option value="nginx" {{ hosting.webserver == 'nginx' ? 'selected' }}>nginx</option>
+                            <option value="apache" {{ hosting.webserver == 'apache' ? 'selected' }}>Apache</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="document_root">Document root</label>
+                        <input id="document_root" name="document_root" value="{{ h.document_root }}"
+                               placeholder="webroot">
+                    </div>
+                </div>
+                <p style="color:var(--text-muted);font-size:.78rem;margin:-.5rem 0 0">
+                    Relative to <code class="mono">{{ domain.root }}</code>. A Symfony or Laravel
+                    site points at <code class="mono">webroot/public</code>. Changing this
+                    regenerates the vhost and creates the directory if it is missing.
+                    Apache honours <code class="mono">.htaccess</code>; nginx does not.
+                </p>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Addresses</h2>
+            <div class="body">
+                <label for="preferred_domain">Preferred domain</label>
+                <select id="preferred_domain" name="preferred_domain">
+                    <option value="none" {{ h.preferred_domain == 'none' ? 'selected' }}>
+                        No redirect — serve both
+                    </option>
+                    <option value="root" {{ h.preferred_domain == 'root' ? 'selected' }}>
+                        Redirect www.{{ domain.name }} to {{ domain.name }}
+                    </option>
+                    <option value="www" {{ h.preferred_domain == 'www' ? 'selected' }}>
+                        Redirect {{ domain.name }} to www.{{ domain.name }}
+                    </option>
+                </select>
+                <p style="color:var(--text-muted);font-size:.78rem;margin:-.7rem 0 1rem">
+                    A permanent redirect, so search engines settle on one address.
+                </p>
+
+                {% if hosting.has_certificate %}
+                    {{ _self.flag('force_https', 'Redirect all traffic to HTTPS', h.force_https,
+                                  'The certificate renewal path stays reachable over plain HTTP.') }}
+                {% else %}
+                    <p style="color:var(--text-muted);font-size:.85rem;margin:0">
+                        <strong>Redirect to HTTPS</strong> becomes available once this domain has a
+                        certificate — redirecting to a port that refuses connections would take the
+                        site offline. Issue one from the
+                        <a href="{{ path('domains') }}">SSL/TLS</a> tool.
+                    </p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Behaviour</h2>
+            <div class="body">
+                {{ _self.flag('error_documents', 'Serve custom error pages', h.error_documents,
+                              'Uses the pages in error_docs/ instead of the web server’s defaults.') }}
+                {{ _self.flag('ssh_access', 'Shell access for ' ~ domain.customer_username, h.ssh_access,
+                              'Gives this customer a login shell. A hosting account does not need one, and a shell is a much larger surface than serving files.') }}
+                {{ _self.flag('suspended', 'Suspend this site', h.suspended,
+                              'Serves 503 instead of the site. Files, databases and certificates are left alone.') }}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Additional directives</h2>
+            <div class="body">
+                <textarea name="additional_directives" rows="5" spellcheck="false"
+                          placeholder="{{ hosting.webserver == 'nginx'
+                              ? 'client_max_body_size 64m;' : 'Header set X-Frame-Options SAMEORIGIN' }}"
+                          style="width:100%;font-family:var(--mono);font-size:.82rem;
+                                 border:1px solid var(--border-strong);border-radius:var(--radius);
+                                 padding:.7rem;background:var(--surface-sunken);color:var(--text)">{{ h.additional_directives }}</textarea>
+                <p style="color:var(--text-muted);font-size:.76rem;margin:.5rem 0 0">
+                    Added to the server block verbatim, in {{ hosting.webserver }} syntax. A
+                    directive the server rejects will stop it reloading, and the message will
+                    say so — the site keeps running on the previous config until then.
+                </p>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:.5rem;margin-bottom:2rem">
+            <button class="btn" type="submit">Save hosting settings</button>
+            <a class="btn ghost" href="{{ path('domains') }}">Cancel</a>
+        </div>
+    </form>
+{% endblock %}

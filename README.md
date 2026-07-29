@@ -508,6 +508,44 @@ invisible until the day it expires, so it is stated rather than assumed.
 Use `--staging` while DNS is still settling: untrusted certificates, far looser
 rate limits.
 
+## Hosting settings
+
+Per domain, the things that change how the site is served rather than how PHP
+runs: which web server, document root, www preference, HTTPS redirect, custom
+error pages, shell access, suspension, and free-form directives.
+
+**nginx and Apache are generated from the same settings**, so switching a domain
+between them changes how it is served and nothing about how it behaves. Apache
+honours `.htaccess`; nginx does not — that is the reason to pick one.
+
+Two settings are deliberately conditional rather than always offered:
+
+- **Redirect to HTTPS** appears only once the domain has a certificate.
+  Redirecting to a port that refuses connections would take the site offline.
+- **Shell access** is off by default. A hosting account does not need a login
+  shell, and one is a far larger surface than serving files.
+
+**Suspension** serves 503 rather than 404 — the site exists, it is turned off —
+and leaves files, databases and certificates alone.
+
+### Ownership, and why the group matters
+
+The domain tree is `customer:www-data` at `0750`:
+
+```text
+/var/www/vhosts/<domain>/       drwxr-x---  acme:www-data
+  webroot/                      drwxr-x---  acme:www-data    served
+  private/                      drwx------  acme:www-data    not served, not readable
+```
+
+PHP runs as the customer through their own pool, but *static* files are read by
+the web server process. Owned `customer:customer` the web server cannot even
+traverse the directory and every request returns 403 — which is exactly what
+happened the first time Apache actually served a page here. The web server's
+group gives it read and traverse; everyone else, including every other customer,
+gets nothing. `private` stays `0700`, so the web server cannot read it either —
+verified as `www-data`: permission denied.
+
 ## PHP settings
 
 Every domain gets **its own FPM pool, running as that domain's customer**. That

@@ -90,7 +90,9 @@
                         </a>
                         <span class="tool disabled">{{ ui.icon('file-text', 17) }} Logs</span>
                         <span class="tool disabled">{{ ui.icon('mail', 17) }} Mail</span>
-                        <span class="tool disabled">{{ ui.icon('settings', 17) }} Hosting</span>
+                        <a class="tool" href="{{ path('domain_hosting', {id: domain.id}) }}">
+                            {{ ui.icon('settings', 17) }} Hosting
+                        </a>
 
                         <a class="tool danger" href="{{ path('domain_delete_confirm', {id: domain.id}) }}">
                             {{ ui.icon('trash', 17) }} Remove

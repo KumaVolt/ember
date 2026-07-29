@@ -97,6 +97,52 @@ final class DomainController extends AbstractController
         return $this->redirectToRoute('domains');
     }
 
+    #[Route('/domains/{id}/hosting', name: 'domain_hosting', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function hosting(int $id): Response
+    {
+        $domain = $this->api->get('/api/v1/domains/'.$id);
+        if (null === $domain || isset($domain['error'])) {
+            $this->addFlash('error', 'That domain no longer exists.');
+
+            return $this->redirectToRoute('domains');
+        }
+
+        return $this->render('domain/hosting.html.twig', [
+            'domain' => $domain,
+            'hosting' => $this->api->get('/api/v1/domains/'.$id.'/hosting') ?? [],
+        ]);
+    }
+
+    #[Route('/domains/{id}/hosting', name: 'domain_hosting_save', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function saveHosting(int $id, Request $request): Response
+    {
+        $form = $request->request;
+
+        $result = $this->api->post('/api/v1/domains/'.$id.'/hosting', [
+            'document_root' => trim((string) $form->get('document_root')),
+            'preferred_domain' => (string) $form->get('preferred_domain'),
+            'additional_directives' => trim((string) $form->get('additional_directives')),
+            'webserver' => (string) $form->get('webserver'),
+            // Unticked checkboxes are absent, so each is read explicitly.
+            'force_https' => $form->getBoolean('force_https'),
+            'error_documents' => $form->getBoolean('error_documents'),
+            'ssh_access' => $form->getBoolean('ssh_access'),
+            'suspended' => $form->getBoolean('suspended'),
+        ]);
+
+        if (null === $result || isset($result['error'])) {
+            $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
+        } else {
+            $message = 'Hosting settings saved.';
+            if (!empty($result['notes'])) {
+                $message .= '<ul><li>'.implode('</li><li>', array_map('htmlspecialchars', $result['notes'])).'</li></ul>';
+            }
+            $this->addFlash('ok', $message);
+        }
+
+        return $this->redirectToRoute('domain_hosting', ['id' => $id]);
+    }
+
     #[Route('/domains/{id}/php', name: 'domain_php', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function php(int $id): Response
     {
