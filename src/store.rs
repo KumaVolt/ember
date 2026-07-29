@@ -20,7 +20,7 @@ use crate::{config, daemon::now_secs};
 /// root so it can be moved, backed up, or removed as a unit.
 pub const VHOST_ROOT: &str = "/var/www/vhosts";
 /// The subdirectory actually served to the world.
-pub const DOCROOT_NAME: &str = "httpdocs";
+pub const DOCROOT_NAME: &str = "webroot";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Customer {
@@ -42,7 +42,7 @@ pub struct Domain {
     pub name: String,
     /// `/var/www/vhosts/<domain>`
     pub root: String,
-    /// `/var/www/vhosts/<domain>/httpdocs`
+    /// `/var/www/vhosts/<domain>/webroot`
     pub docroot: String,
     pub webserver: String,
     pub php_version: Option<String>,

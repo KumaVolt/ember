@@ -389,11 +389,23 @@ boundary, not a convention.
 
 ```text
 /var/www/vhosts/<domain>/
-  httpdocs/     the site itself — the only thing served
+  webroot/      the document root — the only directory served
+  private/      never served: application storage, credentials, uploads
   logs/         access.log and error.log for this domain alone
   conf/         the generated vhost config
+  error_docs/   403, 404 and 500 pages, wired into the vhost
+  cgi-bin/      CGI scripts, deliberately outside the document root
   tmp/          per-domain scratch, off the shared /tmp
 ```
+
+The split between `webroot` and `private` is the point: only `webroot` is
+reachable by URL, so anything a site must keep but must not expose has an
+obvious home that no request can reach.
+
+`webroot/index.html` is a branded default page carrying the operator's name and
+accent, marked `noindex`. It tells the customer the domain is working and how to
+replace it, so a new domain never answers with the web server's stock page — and
+neither do its errors.
 
 Creating a domain writes that tree, chowns it to the customer, generates an
 nginx or apache vhost pointing PHP at a pool that runs as that customer, and
@@ -467,7 +479,7 @@ three escapes are closed:
 
 - `..` and absolute paths are rejected before anything touches the disk.
 - The result is **canonicalised**, which resolves symlinks — so a link planted
-  inside `httpdocs` pointing at `/etc` resolves outside the root and fails.
+  inside `webroot` pointing at `/etc` resolves outside the root and fails.
 - Paths that do not exist yet have their **parent** canonicalised instead, so a
   new file cannot be created through a link either.
 
@@ -486,7 +498,7 @@ editor.
 cannot parse multipart, and this keeps file bytes out of the PHP tier entirely
 instead of buffering them twice. An uploaded name is reduced to its final
 component before use, so a filename can never steer the path — verified with
-`../../../../etc/pwned.txt`, which lands as `httpdocs/pwned.txt`. The
+`../../../../etc/pwned.txt`, which lands as `webroot/pwned.txt`. The
 post-upload redirect is confined to same-origin paths.
 
 ## The panel

@@ -8,7 +8,7 @@
 //!
 //! * `..` and absolute paths are rejected before anything touches the disk.
 //! * The result is canonicalised, which resolves symlinks — so a link planted
-//!   inside `httpdocs` pointing at `/etc` resolves outside the root and fails.
+//!   inside `webroot` pointing at `/etc` resolves outside the root and fails.
 //! * For paths that do not exist yet the *parent* is canonicalised instead, so
 //!   a new file cannot be created through a link either.
 //!

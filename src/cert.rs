@@ -7,7 +7,7 @@
 //! correctly rather than writing a scheduler that must never drift.
 //!
 //! Validation is HTTP-01 over the domain's own webroot: the challenge file is
-//! written under `httpdocs/.well-known/acme-challenge/` and served by the
+//! written under `webroot/.well-known/acme-challenge/` and served by the
 //! domain's normal vhost. Nothing needs to stop, and no port is taken over.
 
 use std::path::{Path, PathBuf};

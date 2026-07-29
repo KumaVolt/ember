@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! /var/www/vhosts/<domain>/
-//!   httpdocs/     the site itself — the only thing served
+//!   webroot/     the site itself — the only thing served
 //!   logs/         access.log, error.log for this domain alone
 //!   conf/         the generated vhost config
 //!   tmp/          per-domain scratch, kept off the shared /tmp
@@ -26,27 +26,137 @@ use anyhow::{Context, Result, bail};
 
 use crate::{config::Config, store::Domain};
 
-/// Directories created inside a domain root, and whether the web server needs
-/// to traverse them.
-const LAYOUT: [&str; 4] = ["httpdocs", "logs", "conf", "tmp"];
+/// The standard layout created for every new domain.
+///
+/// Each entry is a directory and the mode it gets. The split matters: only
+/// `webroot` is ever served, so anything a site needs to keep but must not
+/// expose — credentials, uploads it processes, application storage — has an
+/// obvious home in `private` that no URL can reach.
+const LAYOUT: [(&str, u32); 7] = [
+    // Served to the world. The default document root.
+    ("webroot", 0o750),
+    // Never served. Application storage, keys, anything private.
+    ("private", 0o700),
+    // This domain's access and error logs, nobody else's.
+    ("logs", 0o750),
+    // The vhost config ember generates.
+    ("conf", 0o750),
+    // Custom error pages, served for 403/404/500.
+    ("error_docs", 0o750),
+    // CGI scripts, kept out of the document root deliberately.
+    ("cgi-bin", 0o750),
+    // Per-domain scratch, off the shared /tmp so one site cannot read
+    // another's temporary files.
+    ("tmp", 0o700),
+];
 
-/// A page to serve before the customer uploads anything.
-const PLACEHOLDER_INDEX: &str = r#"<!doctype html>
+/// Error pages written once at provisioning, so a new domain never shows the
+/// web server's default page with its version number on it.
+const ERROR_PAGES: [(&str, &str, &str); 3] = [
+    (
+        "403.html",
+        "403 — Forbidden",
+        "You do not have permission to view this page.",
+    ),
+    ("404.html", "404 — Not found", "That page does not exist."),
+    (
+        "500.html",
+        "500 — Server error",
+        "Something went wrong on this server.",
+    ),
+];
+
+fn error_page(title: &str, message: &str) -> String {
+    format!(
+        "<!doctype html>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n\
+         <style>body{{margin:0;min-height:100vh;display:flex;align-items:center;\
+         justify-content:center;background:#f1f5f9;color:#1a2230;text-align:center;\
+         font:15px/1.6 ui-sans-serif,system-ui,sans-serif}}\
+         h1{{font-size:1.3rem;margin:0 0 .4rem}}p{{color:#64748b;margin:0}}</style>\n\
+         <div><h1>{title}</h1><p>{message}</p></div>\n"
+    )
+}
+
+/// The page a domain serves until its owner uploads something.
+///
+/// Built here rather than shipped as an asset so it carries the operator's
+/// branding, and so a freshly created domain answers with something deliberate
+/// instead of the web server's default page.
+fn default_page(domain: &str, branding: &crate::config::Branding) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title>{DOMAIN}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{domain}</title>
+<!-- Parked pages should not turn up in search results. -->
+<meta name="robots" content="noindex,nofollow">
 <style>
-  body { margin:0; min-height:100vh; display:flex; align-items:center;
-         justify-content:center; background:#0e0f12; color:#e6e8ee;
-         font:15px/1.6 ui-sans-serif, system-ui, sans-serif; text-align:center; }
-  h1 { font-size:1.4rem; margin:0 0 .4rem; letter-spacing:-.01em; }
-  p  { color:#8b90a0; margin:0; font-size:.9rem; }
-  code { color:#c9cdd8; }
+  :root {{ --accent: {accent}; }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+          background:#f1f5f9; color:#1a2230; padding:2rem 1.25rem;
+          font:15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }}
+  main {{ width:100%; max-width:34rem; background:#fff; border:1px solid #e3e8ef;
+          border-radius:10px; box-shadow:0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+          overflow:hidden; }}
+  .head {{ padding:1.5rem 1.75rem; border-bottom:1px solid #e3e8ef; display:flex;
+           align-items:center; gap:.7rem; }}
+  .mark {{ width:30px; height:30px; border-radius:7px; flex:none; background:var(--accent);
+           color:#fff; display:grid; place-items:center; font-weight:700; font-size:.9rem; }}
+  .head h1 {{ font-size:1.15rem; margin:0; letter-spacing:-.02em; }}
+  .head p {{ margin:.1rem 0 0; color:#64748b; font-size:.85rem; }}
+  .body {{ padding:1.5rem 1.75rem; }}
+  .body h2 {{ font-size:.95rem; margin:0 0 .5rem; }}
+  .body p {{ margin:0 0 1rem; color:#475569; font-size:.9rem; }}
+  ol {{ margin:0; padding-left:1.15rem; color:#475569; font-size:.9rem; }}
+  li {{ margin-bottom:.5rem; }}
+  code {{ font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.83rem;
+          background:#f8fafc; border:1px solid #e3e8ef; border-radius:4px; padding:.05rem .3rem; }}
+  .foot {{ padding:.9rem 1.75rem; background:#f8fafc; border-top:1px solid #e3e8ef;
+           color:#64748b; font-size:.8rem; }}
 </style>
-<div>
-  <h1>{DOMAIN}</h1>
-  <p>This domain is set up and ready. Upload your site to <code>httpdocs/</code>.</p>
-</div>
-"#;
+</head>
+<body>
+<main>
+  <div class="head">
+    <span class="mark">{initial}</span>
+    <div>
+      <h1>{domain}</h1>
+      <p>This domain is set up and working.</p>
+    </div>
+  </div>
+
+  <div class="body">
+    <h2>You are seeing this because nothing has been uploaded yet</h2>
+    <p>
+      The domain resolves, the web server is serving it, and PHP is wired up.
+      Replace this page and the site is live.
+    </p>
+    <ol>
+      <li>Sign in to your {brand} control panel.</li>
+      <li>Open <strong>Websites &amp; Domains</strong> and choose <strong>Files</strong>
+          for this domain.</li>
+      <li>Upload your site into <code>webroot/</code>, replacing
+          <code>index.html</code>.</li>
+    </ol>
+    <p style="margin:0">
+      Keep anything that should not be public — credentials, application storage —
+      in <code>private/</code>, which is never served.
+    </p>
+  </div>
+
+  <div class="foot">Default page &middot; {brand}</div>
+</main>
+</body>
+</html>
+"#,
+        accent = branding.safe_accent(),
+        brand = branding.name,
+        initial = branding.name.chars().next().unwrap_or('E').to_uppercase(),
+    )
+}
 
 /// Create the directory tree for a domain and hand it to its owner.
 ///
@@ -63,15 +173,42 @@ pub fn provision(cfg: &Config, domain: &Domain, owner: &str) -> Result<()> {
 
     std::fs::create_dir_all(&root)
         .with_context(|| format!("could not create {}", root.display()))?;
-    for dir in LAYOUT {
+    for (dir, _) in LAYOUT {
         std::fs::create_dir_all(root.join(dir))
             .with_context(|| format!("could not create {}/{dir}", root.display()))?;
     }
 
-    let index = root.join("httpdocs").join("index.html");
+    // The document root may sit deeper than webroot — a Symfony or Laravel
+    // site points at webroot/public — so create whatever was asked for.
+    let docroot = PathBuf::from(&domain.docroot);
+    std::fs::create_dir_all(&docroot)
+        .with_context(|| format!("could not create {}", docroot.display()))?;
+
+    let index = docroot.join("index.html");
     if !index.exists() {
-        std::fs::write(&index, PLACEHOLDER_INDEX.replace("{DOMAIN}", &domain.name))
+        let branding = crate::config::Branding::resolve();
+        std::fs::write(&index, default_page(&domain.name, &branding))
             .with_context(|| format!("could not write {}", index.display()))?;
+    }
+
+    for (name, title, message) in ERROR_PAGES {
+        let path = root.join("error_docs").join(name);
+        if !path.exists() {
+            std::fs::write(&path, error_page(title, message))
+                .with_context(|| format!("could not write {}", path.display()))?;
+        }
+    }
+
+    // A README in private/ so the distinction is discoverable from the file
+    // manager rather than only from documentation.
+    let readme = root.join("private").join("README.txt");
+    if !readme.exists() {
+        let _ = std::fs::write(
+            &readme,
+            "Nothing in this directory is served over the web.\n\n\
+             Put application storage, credentials and anything else that must \
+             stay private here. Files under webroot are public.\n",
+        );
     }
 
     apply_ownership(&root, owner)?;
@@ -121,7 +258,7 @@ fn ids_for(user: &str) -> Result<(u32, u32)> {
 
 /// Give the tree to the customer, and make the modes sane.
 ///
-/// `httpdocs` is group-readable so the web server can serve it; `logs` and
+/// `webroot` is group-readable so the web server can serve it; `logs` and
 /// `conf` are not, because they are nobody else's business.
 fn apply_ownership(root: &Path, owner: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -130,12 +267,7 @@ fn apply_ownership(root: &Path, owner: &str) -> Result<()> {
     chown_recursive(root, uid, gid)?;
 
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o750))?;
-    for (dir, mode) in [
-        ("httpdocs", 0o750),
-        ("logs", 0o750),
-        ("conf", 0o750),
-        ("tmp", 0o700),
-    ] {
+    for (dir, mode) in LAYOUT {
         let path = root.join(dir);
         if path.exists() {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
@@ -219,6 +351,7 @@ impl WebServer {
         let name = &domain.name;
         let docroot = &domain.docroot;
         let logs = format!("{}/logs", domain.root);
+        let errors = format!("{}/error_docs", domain.root);
         let socket = pool_socket_for(name);
         let tls = crate::cert::has_certificate(name);
         let fullchain = crate::cert::fullchain_path(name);
@@ -254,6 +387,16 @@ impl WebServer {
                      \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n\
                      \x20       fastcgi_param DOCUMENT_ROOT $document_root;\n\
                      \x20       fastcgi_param HTTPS $https_flag;\n\
+                     \x20   }}\n\
+                     \n\
+                     \x20   # The pages written at provisioning, so a visitor never\n\
+                     \x20   # sees the web server's default error page.\n\
+                     \x20   error_page 403 /__errors/403.html;\n\
+                     \x20   error_page 404 /__errors/404.html;\n\
+                     \x20   error_page 500 502 503 504 /__errors/500.html;\n\
+                     \x20   location ^~ /__errors/ {{\n\
+                     \x20       internal;\n\
+                     \x20       alias {errors}/;\n\
                      \x20   }}\n\
                      \n\
                      \x20   # Dotfiles are configuration, not content.\n\
@@ -333,6 +476,14 @@ impl WebServer {
                      \x20   <FilesMatch \\.php$>\n\
                      \x20       SetHandler \"proxy:unix:{socket}|fcgi://localhost\"\n\
                      \x20   </FilesMatch>\n\
+                     \n\
+                     \x20   Alias /__errors/ {errors}/\n\
+                     \x20   <Directory {errors}>\n\
+                     \x20       Require all granted\n\
+                     \x20   </Directory>\n\
+                     \x20   ErrorDocument 403 /__errors/403.html\n\
+                     \x20   ErrorDocument 404 /__errors/404.html\n\
+                     \x20   ErrorDocument 500 /__errors/500.html\n\
                      \n\
                      \x20   <FilesMatch \"^\\.\">\n\
                      \x20       Require all denied\n\

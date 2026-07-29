@@ -16,7 +16,7 @@
         <div class="body">
             <ul style="margin:0 0 1.1rem; padding-left:1.1rem; color:var(--text-muted); font-size:.9rem">
                 <li>The entire directory <code class="mono">{{ domain.root }}</code>,
-                    including <strong>everything in httpdocs</strong> and its logs</li>
+                    including <strong>everything in webroot</strong> and its logs</li>
                 <li>The generated {{ domain.webserver }} vhost, so the site stops being served</li>
                 {% if domain.certificate and domain.certificate.present %}
                     <li>The TLS certificate stays with certbot but stops being used</li>
