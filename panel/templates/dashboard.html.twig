@@ -61,7 +61,9 @@
                 {% for domain in domains|slice(0, 5) %}
                     <tr>
                         <td><strong>{{ domain.name }}</strong></td>
-                        <td>{{ domain.customer_username }}</td>
+                        <td>
+                            <a href="{{ path('customer_show', {id: domain.customer_id}) }}">{{ domain.customer_username }}</a>
+                        </td>
                         <td class="mono">{{ domain.docroot }}</td>
                         <td><span class="badge muted">{{ domain.webserver }}</span></td>
                     </tr>

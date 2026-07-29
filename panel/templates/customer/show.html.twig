@@ -1,0 +1,59 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — {{ customer.display_name ?: customer.username }}{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>{{ customer.display_name ?: customer.username }}</h1>
+            <p>System account <span class="mono">{{ customer.username }}</span> ·
+               everything below runs as this user.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('customers') }}">All customers</a>
+    </header>
+
+    <div class="tiles">
+        <div class="tile">
+            <div class="label">Domains</div>
+            <div class="value">{{ customer.domain_count }}</div>
+            <div class="sub">hosted for this customer</div>
+        </div>
+        <div class="tile">
+            <div class="label">Account</div>
+            <div class="value" style="font-size:1.05rem" class="mono">{{ customer.username }}</div>
+            <div class="sub">owns their files and processes</div>
+        </div>
+        <div class="tile">
+            <div class="label">Status</div>
+            <div class="value" style="font-size:1.05rem">
+                <span class="badge ok"><span class="dot"></span>{{ customer.status }}</span>
+            </div>
+            <div class="sub">{{ customer.email ?: 'no email on file' }}</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Domains</h2>
+        {% if domains is empty %}
+            <div class="empty">
+                <p>This customer has no domains yet.</p>
+                <a class="btn" href="{{ path('domain_new') }}">{{ ui.icon('plus', 15) }} Add a domain</a>
+            </div>
+        {% else %}
+            <table>
+                <tr><th>Domain</th><th>Document root</th><th>Server</th><th></th></tr>
+                {% for domain in domains %}
+                    <tr>
+                        <td><strong>{{ domain.name }}</strong></td>
+                        <td class="mono">{{ domain.docroot }}</td>
+                        <td><span class="badge muted">{{ domain.webserver }}</span></td>
+                        <td style="text-align:right;white-space:nowrap">
+                            <a class="btn ghost sm" href="{{ path('domain_files', {id: domain.id}) }}">Files</a>
+                            <a class="btn ghost sm" href="{{ path('domains') }}">Manage</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+{% endblock %}

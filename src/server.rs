@@ -973,6 +973,15 @@ async fn resource_api(
             )
         }
 
+        (&Method::GET, r) if path_id(r, "/api/v1/customers").is_some() => {
+            let id = path_id(r, "/api/v1/customers").unwrap();
+            let conn = store::open()?;
+            match store::find_customer(&conn, id)? {
+                Some(customer) => api_json(StatusCode::OK, serde_json::json!(customer)),
+                None => api_error(StatusCode::NOT_FOUND, "no such customer"),
+            }
+        }
+
         (&Method::POST, "/api/v1/customers") => {
             let body = json_body(request).await?;
             let Some(username) = field(&body, "username") else {
@@ -1039,10 +1048,21 @@ async fn resource_api(
 
         // --- domains -------------------------------------------------------
         (&Method::GET, "/api/v1/domains") => {
+            // ?customer_id=N narrows the list, so the customer page does not
+            // have to fetch everything and filter in the view.
+            let customer_id = request
+                .uri()
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "customer_id")
+                .and_then(|(_, v)| v.parse::<i64>().ok());
+
             let conn = store::open()?;
             api_json(
                 StatusCode::OK,
-                serde_json::json!({ "domains": store::list_domains(&conn, None)? }),
+                serde_json::json!({ "domains": store::list_domains(&conn, customer_id)? }),
             )
         }
 

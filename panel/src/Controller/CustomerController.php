@@ -22,6 +22,22 @@ final class CustomerController extends AbstractController
         ]);
     }
 
+    #[Route('/customers/{id}', name: 'customer_show', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function show(int $id): Response
+    {
+        $customer = $this->api->get('/api/v1/customers/'.$id);
+        if (null === $customer || isset($customer['error'])) {
+            $this->addFlash('error', 'That customer no longer exists.');
+
+            return $this->redirectToRoute('customers');
+        }
+
+        return $this->render('customer/show.html.twig', [
+            'customer' => $customer,
+            'domains' => ($this->api->get('/api/v1/domains?customer_id='.$id)['domains'] ?? []),
+        ]);
+    }
+
     #[Route('/customers/new', name: 'customer_new', methods: ['GET'])]
     public function new(): Response
     {

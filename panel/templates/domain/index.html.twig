@@ -44,7 +44,12 @@
                             <span class="path">{{ domain.docroot }}</span>
                         </span>
 
-                        <span class="domain-cell hide-sm">{{ domain.customer_username }}</span>
+                        {# A link inside <summary> would also toggle the row, so the
+                           click is stopped from bubbling. #}
+                        <span class="domain-cell hide-sm">
+                            <a href="{{ path('customer_show', {id: domain.customer_id}) }}"
+                               onclick="event.stopPropagation()">{{ domain.customer_username }}</a>
+                        </span>
                         <span class="domain-cell hide-sm">{{ domain.webserver }}</span>
                         <span class="hide-sm">
                             {% if cert and cert.present %}

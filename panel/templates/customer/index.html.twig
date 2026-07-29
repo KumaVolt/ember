@@ -22,7 +22,11 @@
                 <tr><th>Customer</th><th>System account</th><th>Email</th><th>Domains</th><th></th></tr>
                 {% for customer in customers %}
                     <tr data-filter="{{ (customer.username ~ ' ' ~ (customer.display_name ?: '') ~ ' ' ~ (customer.email ?: ''))|lower }}">
-                        <td><strong>{{ customer.display_name ?: customer.username }}</strong></td>
+                        <td>
+                            <a href="{{ path('customer_show', {id: customer.id}) }}">
+                                <strong>{{ customer.display_name ?: customer.username }}</strong>
+                            </a>
+                        </td>
                         <td class="mono">{{ customer.username }}</td>
                         <td>{{ customer.email ?: '—' }}</td>
                         <td>{{ customer.domain_count }}</td>
