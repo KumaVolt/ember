@@ -24,7 +24,7 @@ use crate::{
     daemon::{self, State as ServiceState},
     database,
     esw::{self, EswProcess, PoolAddr},
-    files, pages, services, store, system, vhost,
+    files, pages, php, services, store, system, vhost,
     worker::WorkerPool,
 };
 
@@ -141,6 +141,12 @@ pub async fn run(cfg: Config) -> Result<()> {
         tokio::task::spawn_blocking(move || {
             let status = database::ensure_running(&cfg);
             esw::log_line(&format!("[{}] database: {status}", daemon::now_secs()));
+
+            // Site pools daemonise and outlive ember, so this reconciles with
+            // whatever is already running rather than assuming.
+            for message in php::reload_all(&cfg) {
+                esw::log_line(&format!("[{}] php: {message}", daemon::now_secs()));
+            }
         });
     }
 
@@ -892,6 +898,22 @@ async fn upload(
     ))
 }
 
+/// Overlay submitted fields onto the stored settings.
+///
+/// A form that posts only what it shows must not reset the rest, so absent keys
+/// keep their current value rather than falling back to the default.
+fn merge_settings(mut base: serde_json::Value, incoming: serde_json::Value) -> serde_json::Value {
+    let (Some(base_map), Some(incoming_map)) = (base.as_object_mut(), incoming.as_object()) else {
+        return base;
+    };
+    for (key, value) in incoming_map {
+        if base_map.contains_key(key) && !value.is_null() {
+            base_map.insert(key.clone(), value.clone());
+        }
+    }
+    base
+}
+
 /// Is this account allowed to change the machine?
 fn is_admin(user: &str) -> bool {
     if user == "root" {
@@ -1123,6 +1145,12 @@ async fn resource_api(
                         StatusCode::BAD_REQUEST,
                         &format!("could not create the hosting layout: {err}"),
                     )));
+                }
+                // The vhost points PHP at a pool socket, so the pool has to
+                // exist before the site is reloadable.
+                match php::apply(&cfg, &domain, &php::PhpSettings::default()) {
+                    Ok(message) => warnings.push(message),
+                    Err(err) => warnings.push(format!("php pool not created: {err}")),
                 }
                 match vhost::write_config(&cfg, &domain) {
                     Ok(path) => warnings.push(format!("config written to {}", path.display())),
@@ -1642,6 +1670,98 @@ async fn resource_api(
             }
         }
 
+        // --- php settings --------------------------------------------------
+        (_, r) if r.starts_with("/api/v1/domains/") && r.ends_with("/php") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/domains/")
+                .trim_end_matches("/php")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+
+            let conn = store::open()?;
+            let Some(domain) = store::find_domain(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain")));
+            };
+
+            let stored: php::PhpSettings = domain
+                .php_settings
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default();
+
+            match *method {
+                Method::GET => api_json(
+                    StatusCode::OK,
+                    serde_json::json!({
+                        "settings": stored,
+                        "version": php::version_for(&domain, &cfg),
+                        "available_versions": esw::installed_versions().unwrap_or_default(),
+                        "suggested_disable_functions": php::SUGGESTED_DISABLED,
+                        "pool_socket": php::socket_path(&domain.name)?.to_string_lossy(),
+                    }),
+                ),
+
+                Method::POST => {
+                    let body = json_body(request).await?;
+
+                    // Merged onto what is stored, so a form posting a subset
+                    // cannot silently reset everything it did not mention.
+                    let settings: php::PhpSettings = match serde_json::from_value(merge_settings(
+                        serde_json::to_value(&stored)?,
+                        body.clone(),
+                    )) {
+                        Ok(settings) => settings,
+                        Err(err) => {
+                            return Ok(Some(api_error(
+                                StatusCode::BAD_REQUEST,
+                                &format!("could not read those settings: {err}"),
+                            )));
+                        }
+                    };
+
+                    if let Err(err) = settings.validate() {
+                        return Ok(Some(api_error(StatusCode::BAD_REQUEST, &err.to_string())));
+                    }
+
+                    let version = field(&body, "version")
+                        .map(str::to_string)
+                        .filter(|v| !v.is_empty());
+                    if let Some(version) = &version
+                        && !esw::is_installed(version)
+                    {
+                        return Ok(Some(api_error(
+                            StatusCode::BAD_REQUEST,
+                            &format!("PHP {version} is not installed"),
+                        )));
+                    }
+
+                    let json = serde_json::to_string(&settings)?;
+                    let updated = store::update_php(&conn, id, version.as_deref(), &json)?;
+
+                    // Written before applying: if the pool fails to reload, the
+                    // stored settings still match what was asked for, and the
+                    // message says what happened.
+                    let applied = match php::apply(&cfg, &updated, &settings) {
+                        Ok(message) => message,
+                        Err(err) => format!("saved, but not applied: {err:#}"),
+                    };
+
+                    esw::log_line(&format!(
+                        "[{}] {actor} changed PHP settings for {}",
+                        daemon::now_secs(),
+                        updated.name
+                    ));
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({ "settings": settings, "result": applied }),
+                    )
+                }
+
+                _ => api_error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+            }
+        }
+
         // --- certificates --------------------------------------------------
         (&Method::GET, r) if r.starts_with("/api/v1/domains/") && r.ends_with("/certificate") => {
             let id: i64 = r
@@ -1800,6 +1920,7 @@ async fn resource_api(
 
             let mut notes = Vec::new();
             if cfg.mode == config::Mode::Host {
+                let _ = php::remove(&cfg, &domain);
                 let _ = vhost::remove_config(&domain);
                 match vhost::deprovision(&cfg, &domain) {
                     Ok(()) => notes.push(format!("removed {}", domain.root)),

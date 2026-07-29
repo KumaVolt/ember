@@ -85,7 +85,9 @@
                         <a class="tool" href="{{ path('domain_databases', {id: domain.id}) }}">
                             {{ ui.icon('database', 17) }} Databases
                         </a>
-                        <span class="tool disabled">{{ ui.icon('code', 17) }} PHP</span>
+                        <a class="tool" href="{{ path('domain_php', {id: domain.id}) }}">
+                            {{ ui.icon('code', 17) }} PHP
+                        </a>
                         <span class="tool disabled">{{ ui.icon('file-text', 17) }} Logs</span>
                         <span class="tool disabled">{{ ui.icon('mail', 17) }} Mail</span>
                         <span class="tool disabled">{{ ui.icon('settings', 17) }} Hosting</span>

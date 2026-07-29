@@ -508,6 +508,45 @@ invisible until the day it expires, so it is stated rather than assumed.
 Use `--staging` while DNS is still settling: untrusted certificates, far looser
 rate limits.
 
+## PHP settings
+
+Every domain gets **its own FPM pool, running as that domain's customer**. That
+is what makes these settings safe to expose: raising `memory_limit` or listing
+`disable_functions` affects one pool, and the process running that code already
+has only that customer's privileges.
+
+One master per PHP version, each including the pool files for the domains using
+it. Masters daemonise and are tracked by pid file, so restarting Ember does not
+take customer sites down with it, and saving settings is a `SIGUSR2` reload —
+in-flight requests finish.
+
+| Group | Settings |
+| --- | --- |
+| PHP support | version, FPM handler, pool socket |
+| Performance | `pm`, `max_children`, `start_servers`, `min`/`max_spare_servers`, `max_requests`, `process_idle_timeout` |
+| Common | `memory_limit`, `max_execution_time`, `max_input_time`, `max_input_vars`, `post_max_size`, `upload_max_filesize`, `file_uploads`, `display_errors`, `log_errors`, `error_reporting`, `allow_url_fopen`, `short_open_tag` |
+| Security | `open_basedir`, `disable_functions`, `session.save_path` |
+| OPcache | `enable`, `memory_consumption`, `max_accelerated_files`, `revalidate_freq`, `validate_timestamps` |
+| Additional | free-form ini, appended verbatim |
+
+`open_basedir` defaults to the domain's own tree — that default is what stops a
+script reading other sites on the machine. Verified against a live pool:
+
+```text
+/etc/passwd                             => DENIED
+/var/www/vhosts/other.test/…/index.html => DENIED
+/var/lib/ember/ember.db                 => DENIED
+```
+
+Settings that would produce a config php-fpm refuses are rejected at the form.
+A rejected form is recoverable; a pool that will not start takes the site down
+until someone reads a log. Directives that only apply to one process manager are
+emitted only for it, since php-fpm refuses to start otherwise.
+
+`disable_functions` is **not** hardened by default — plenty of legitimate
+applications call `exec` — but the page offers a common set behind one click and
+says what the trade is.
+
 ## Databases
 
 One MariaDB server hosts every customer's databases. **Isolation is the

@@ -51,6 +51,9 @@ pub struct Domain {
     /// Filled in when listing, so the UI need not join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub customer_username: Option<String>,
+    /// Serialised `PhpSettings`; absent means the defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub php_settings: Option<String>,
 }
 
 pub fn database_file() -> Result<PathBuf> {
@@ -126,6 +129,16 @@ fn migrate(conn: &Connection) -> Result<()> {
     // Added after the table shipped, so existing installs need it too. SQLite
     // has no ADD COLUMN IF NOT EXISTS; asking the table what it has is the
     // portable way.
+    // Per-domain PHP settings, stored as JSON: the shape belongs to php.rs and
+    // columns would mean a migration for every directive added.
+    let has_php_settings = conn
+        .prepare("SELECT 1 FROM pragma_table_info('domains') WHERE name = 'php_settings'")?
+        .exists([])?;
+    if !has_php_settings {
+        conn.execute_batch("ALTER TABLE domains ADD COLUMN php_settings TEXT;")
+            .context("could not add php_settings to domains")?;
+    }
+
     let has_domain_id = conn
         .prepare("SELECT 1 FROM pragma_table_info('databases') WHERE name = 'domain_id'")?
         .exists([])?;
@@ -276,7 +289,7 @@ pub fn delete_customer(conn: &Connection, id: i64) -> Result<Customer> {
 
 pub fn list_domains(conn: &Connection, customer_id: Option<i64>) -> Result<Vec<Domain>> {
     let sql = "SELECT d.id, d.customer_id, d.name, d.root, d.docroot, d.webserver,
-                      d.php_version, d.status, d.created_at, c.username
+                      d.php_version, d.status, d.created_at, c.username, d.php_settings
                  FROM domains d
                  JOIN customers c ON c.id = d.customer_id
                 WHERE (?1 IS NULL OR d.customer_id = ?1)
@@ -289,7 +302,7 @@ pub fn list_domains(conn: &Connection, customer_id: Option<i64>) -> Result<Vec<D
 pub fn find_domain(conn: &Connection, id: i64) -> Result<Option<Domain>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.customer_id, d.name, d.root, d.docroot, d.webserver,
-                d.php_version, d.status, d.created_at, c.username
+                d.php_version, d.status, d.created_at, c.username, d.php_settings
            FROM domains d
            JOIN customers c ON c.id = d.customer_id
           WHERE d.id = ?1",
@@ -309,6 +322,7 @@ fn row_to_domain(row: &rusqlite::Row<'_>) -> rusqlite::Result<Domain> {
         status: row.get(7)?,
         created_at: row.get::<_, i64>(8)? as u64,
         customer_username: row.get(9)?,
+        php_settings: row.get(10)?,
     })
 }
 
@@ -482,4 +496,18 @@ pub fn delete_database_record(conn: &Connection, id: i64) -> Result<Database> {
     let record = find_database(conn, id)?.context("no such database")?;
     conn.execute("DELETE FROM databases WHERE id = ?1", params![id])?;
     Ok(record)
+}
+
+/// Store a domain's PHP settings and the version it runs on.
+pub fn update_php(
+    conn: &Connection,
+    id: i64,
+    version: Option<&str>,
+    settings_json: &str,
+) -> Result<Domain> {
+    conn.execute(
+        "UPDATE domains SET php_settings = ?2, php_version = ?3 WHERE id = ?1",
+        params![id, settings_json, version],
+    )?;
+    find_domain(conn, id)?.context("no such domain")
 }

@@ -536,8 +536,14 @@ impl WebServer {
 }
 
 /// The FPM socket a domain's pool listens on.
+///
+/// Delegates to [`crate::php`], which is what actually creates the pool — a
+/// second opinion on the path here is how the vhost ends up pointing at a
+/// socket nothing listens on.
 pub fn pool_socket_for(domain: &str) -> String {
-    format!("/run/ember/pools/{domain}.sock")
+    crate::php::socket_path(domain)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| format!("/run/ember/pools/{domain}.sock"))
 }
 
 /// Write a domain's vhost config into its own `conf/` directory, and link it

@@ -97,6 +97,62 @@ final class DomainController extends AbstractController
         return $this->redirectToRoute('domains');
     }
 
+    #[Route('/domains/{id}/php', name: 'domain_php', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function php(int $id): Response
+    {
+        $domain = $this->api->get('/api/v1/domains/'.$id);
+        if (null === $domain || isset($domain['error'])) {
+            $this->addFlash('error', 'That domain no longer exists.');
+
+            return $this->redirectToRoute('domains');
+        }
+
+        return $this->render('domain/php.html.twig', [
+            'domain' => $domain,
+            'php' => $this->api->get('/api/v1/domains/'.$id.'/php') ?? [],
+        ]);
+    }
+
+    #[Route('/domains/{id}/php', name: 'domain_php_save', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function savePhp(int $id, Request $request): Response
+    {
+        $form = $request->request;
+
+        // Checkboxes are absent when unticked, so each is read explicitly
+        // rather than taken from whatever the form happened to send.
+        $flags = ['file_uploads', 'display_errors', 'log_errors', 'allow_url_fopen',
+                  'short_open_tag', 'opcache_enable', 'opcache_validate_timestamps'];
+        $numbers = ['pm_max_children', 'pm_start_servers', 'pm_min_spare_servers',
+                    'pm_max_spare_servers', 'pm_max_requests', 'pm_process_idle_timeout',
+                    'max_execution_time', 'max_input_time', 'max_input_vars',
+                    'opcache_memory_consumption', 'opcache_max_accelerated_files',
+                    'opcache_revalidate_freq'];
+        $strings = ['pm', 'memory_limit', 'post_max_size', 'upload_max_filesize',
+                    'error_reporting', 'open_basedir', 'disable_functions',
+                    'session_save_path', 'additional_directives'];
+
+        $payload = ['version' => (string) $form->get('version', '')];
+        foreach ($flags as $flag) {
+            $payload[$flag] = $form->getBoolean($flag);
+        }
+        foreach ($numbers as $number) {
+            $payload[$number] = (int) $form->get($number);
+        }
+        foreach ($strings as $string) {
+            $payload[$string] = trim((string) $form->get($string));
+        }
+
+        $result = $this->api->post('/api/v1/domains/'.$id.'/php', $payload);
+
+        if (null === $result || isset($result['error'])) {
+            $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
+        } else {
+            $this->addFlash('ok', 'PHP settings saved. '.htmlspecialchars($result['result'] ?? ''));
+        }
+
+        return $this->redirectToRoute('domain_php', ['id' => $id]);
+    }
+
     #[Route('/domains/{id}/delete', name: 'domain_delete_confirm', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function confirmDelete(int $id): Response
     {

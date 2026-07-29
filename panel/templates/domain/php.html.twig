@@ -1,0 +1,183 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — PHP: {{ domain.name }}{% endblock %}
+
+{% macro flag(name, label, value, hint) %}
+    <label style="display:flex;gap:.5rem;align-items:flex-start;font-weight:400;margin:0 0 .7rem">
+        <input type="checkbox" name="{{ name }}" value="1" {{ value ? 'checked' }}
+               style="width:auto;margin:.25rem 0 0">
+        <span>
+            <span class="mono" style="font-size:.85rem">{{ label }}</span>
+            {% if hint %}<br><span style="color:var(--text-muted);font-size:.78rem">{{ hint }}</span>{% endif %}
+        </span>
+    </label>
+{% endmacro %}
+
+{% macro field(name, label, value, hint) %}
+    <div>
+        <label for="{{ name }}" class="mono" style="font-size:.85rem">{{ label }}</label>
+        <input id="{{ name }}" name="{{ name }}" value="{{ value }}">
+        {% if hint %}
+            <p style="color:var(--text-muted);font-size:.76rem;margin:-.7rem 0 .9rem">{{ hint }}</p>
+        {% endif %}
+    </div>
+{% endmacro %}
+
+{% block body %}
+    {% set s = php.settings %}
+
+    <header class="page">
+        <div>
+            <h1>PHP settings</h1>
+            <p><strong>{{ domain.name }}</strong> · its own pool, running as
+               <span class="mono">{{ domain.customer_username }}</span></p>
+        </div>
+        <a class="btn ghost" href="{{ path('domains') }}">Back to domains</a>
+    </header>
+
+    <form method="post" action="{{ path('domain_php_save', {id: domain.id}) }}">
+        <div class="card">
+            <h2>PHP support</h2>
+            <div class="body">
+                <div class="row">
+                    <div>
+                        <label for="version">Version</label>
+                        <select id="version" name="version">
+                            {% for version in php.available_versions %}
+                                <option value="{{ version }}" {{ version == php.version ? 'selected' }}>
+                                    PHP {{ version }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label>Handler</label>
+                        <input value="FPM ({{ domain.webserver }})" disabled>
+                    </div>
+                </div>
+                <p style="color:var(--text-muted);font-size:.8rem;margin:0">
+                    Pool socket: <code class="mono">{{ php.pool_socket }}</code>.
+                    Extra versions come from <a href="{{ path('settings_services') }}">Settings → Services</a>.
+                </p>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Performance</h2>
+            <div class="body">
+                <div class="row">
+                    <div>
+                        <label for="pm" class="mono" style="font-size:.85rem">pm</label>
+                        <select id="pm" name="pm">
+                            {% for mode in ['ondemand', 'dynamic', 'static'] %}
+                                <option value="{{ mode }}" {{ s.pm == mode ? 'selected' }}>{{ mode }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    {{ _self.field('pm_max_children', 'pm.max_children', s.pm_max_children) }}
+                    {{ _self.field('pm_max_requests', 'pm.max_requests', s.pm_max_requests) }}
+                </div>
+                <p style="color:var(--text-muted);font-size:.78rem;margin:-.5rem 0 .9rem">
+                    <strong>ondemand</strong> starts workers only when requests arrive — the right
+                    default when many sites share a machine. <strong>dynamic</strong> keeps spare
+                    workers ready. <strong>static</strong> keeps a fixed number running.
+                </p>
+                <div class="row">
+                    {{ _self.field('pm_start_servers', 'pm.start_servers', s.pm_start_servers, 'dynamic only') }}
+                    {{ _self.field('pm_min_spare_servers', 'pm.min_spare_servers', s.pm_min_spare_servers, 'dynamic only') }}
+                    {{ _self.field('pm_max_spare_servers', 'pm.max_spare_servers', s.pm_max_spare_servers, 'dynamic only') }}
+                    {{ _self.field('pm_process_idle_timeout', 'pm.process_idle_timeout', s.pm_process_idle_timeout, 'seconds, ondemand only') }}
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Common settings</h2>
+            <div class="body">
+                <div class="row">
+                    {{ _self.field('memory_limit', 'memory_limit', s.memory_limit, 'e.g. 128M, or -1 for none') }}
+                    {{ _self.field('max_execution_time', 'max_execution_time', s.max_execution_time, 'seconds') }}
+                    {{ _self.field('max_input_time', 'max_input_time', s.max_input_time, '-1 uses max_execution_time') }}
+                    {{ _self.field('max_input_vars', 'max_input_vars', s.max_input_vars) }}
+                    {{ _self.field('post_max_size', 'post_max_size', s.post_max_size) }}
+                    {{ _self.field('upload_max_filesize', 'upload_max_filesize', s.upload_max_filesize, 'must not exceed post_max_size') }}
+                </div>
+
+                {{ _self.field('error_reporting', 'error_reporting', s.error_reporting) }}
+
+                <div class="row" style="margin-top:.4rem">
+                    <div>
+                        {{ _self.flag('file_uploads', 'file_uploads', s.file_uploads) }}
+                        {{ _self.flag('log_errors', 'log_errors', s.log_errors, 'writes to logs/php.log') }}
+                        {{ _self.flag('display_errors', 'display_errors', s.display_errors, 'shows errors to visitors — leave off on a live site') }}
+                    </div>
+                    <div>
+                        {{ _self.flag('allow_url_fopen', 'allow_url_fopen', s.allow_url_fopen) }}
+                        {{ _self.flag('short_open_tag', 'short_open_tag', s.short_open_tag) }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Security</h2>
+            <div class="body">
+                <label for="open_basedir" class="mono" style="font-size:.85rem">open_basedir</label>
+                <input id="open_basedir" name="open_basedir" value="{{ s.open_basedir }}"
+                       placeholder="{{ domain.root }}/:{{ domain.root }}/tmp/">
+                <p style="color:var(--text-muted);font-size:.76rem;margin:-.7rem 0 .9rem">
+                    Confines file access to these paths. Left empty it defaults to this domain's
+                    own tree, which is what stops a script reading other sites on the machine.
+                </p>
+
+                <label for="disable_functions" class="mono" style="font-size:.85rem">disable_functions</label>
+                <input id="disable_functions" name="disable_functions" value="{{ s.disable_functions }}">
+                <p style="color:var(--text-muted);font-size:.76rem;margin:-.7rem 0 .9rem">
+                    Comma-separated. A common hardening set is
+                    <code class="mono" style="font-size:.72rem">{{ php.suggested_disable_functions }}</code>
+                    <button type="button" class="btn ghost sm" style="margin-left:.3rem"
+                            onclick="document.getElementById('disable_functions').value='{{ php.suggested_disable_functions }}'">
+                        use this
+                    </button>
+                    — but plenty of legitimate applications call these, so it is not applied by default.
+                </p>
+
+                {{ _self.field('session_save_path', 'session.save_path', s.session_save_path, 'empty uses this domain’s tmp directory') }}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>OPcache</h2>
+            <div class="body">
+                {{ _self.flag('opcache_enable', 'opcache.enable', s.opcache_enable) }}
+                <div class="row">
+                    {{ _self.field('opcache_memory_consumption', 'opcache.memory_consumption', s.opcache_memory_consumption, 'MB') }}
+                    {{ _self.field('opcache_max_accelerated_files', 'opcache.max_accelerated_files', s.opcache_max_accelerated_files) }}
+                    {{ _self.field('opcache_revalidate_freq', 'opcache.revalidate_freq', s.opcache_revalidate_freq, 'seconds') }}
+                </div>
+                {{ _self.flag('opcache_validate_timestamps', 'opcache.validate_timestamps', s.opcache_validate_timestamps,
+                              'off is faster but code changes need a reload to take effect') }}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Additional directives</h2>
+            <div class="body">
+                <textarea name="additional_directives" rows="5" spellcheck="false"
+                          placeholder="php_value[date.timezone] = Europe/Amsterdam"
+                          style="width:100%;font-family:var(--mono);font-size:.82rem;
+                                 border:1px solid var(--border-strong);border-radius:var(--radius);
+                                 padding:.7rem;background:var(--surface-sunken);color:var(--text)">{{ s.additional_directives }}</textarea>
+                <p style="color:var(--text-muted);font-size:.76rem;margin:.5rem 0 0">
+                    Appended to the pool verbatim. A directive php-fpm rejects will stop the pool
+                    reloading, and the message will say so.
+                </p>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:.5rem;margin-bottom:2rem">
+            <button class="btn" type="submit">Save and reload PHP</button>
+            <a class="btn ghost" href="{{ path('domains') }}">Cancel</a>
+        </div>
+    </form>
+{% endblock %}

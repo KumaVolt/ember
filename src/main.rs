@@ -17,6 +17,7 @@ mod esw;
 mod files;
 mod pages;
 mod pam;
+mod php;
 mod server;
 mod services;
 mod store;
