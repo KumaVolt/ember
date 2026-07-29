@@ -126,11 +126,21 @@ final class EswWorker
         // $_SERVER is rebuilt per request. Ember supplies REMOTE_USER here, and
         // the security firewall reads it straight out of the server bag.
         $server = $meta['server'] ?? [];
+        $method = strtoupper($meta['method'] ?? 'GET');
+
+        // Under FPM, PHP populates $_POST from the body. There is no $_POST
+        // here, and Request::create() does not parse a raw body into request
+        // parameters — so without this every form submission arrives empty.
+        $params = [];
+        $contentType = $meta['headers']['content-type'] ?? ($server['CONTENT_TYPE'] ?? '');
+        if ('' !== $body && str_contains(strtolower($contentType), 'application/x-www-form-urlencoded')) {
+            parse_str($body, $params);
+        }
 
         $request = Request::create(
             $meta['uri'] ?? '/',
-            $meta['method'] ?? 'GET',
-            [],
+            $method,
+            $params,
             $meta['cookies'] ?? [],
             [],
             is_array($server) ? $server : [],

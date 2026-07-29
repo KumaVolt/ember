@@ -115,27 +115,44 @@
         .tile .value { font-size:1.5rem; font-weight:650; letter-spacing:-.02em; margin-top:.1rem; }
         .tile .sub { color:var(--text-muted); font-size:.8rem; }
 
-        /* --- domain cards ------------------------------------------------ */
-        .domain { background:var(--surface); border:1px solid var(--border);
-                  border-radius:var(--radius-lg); box-shadow:var(--shadow); margin:0 0 .9rem;
-                  overflow:hidden; }
-        .domain:hover { box-shadow:var(--shadow-lift); }
-        .domain-head { display:flex; align-items:flex-start; gap:.75rem; padding:.95rem 1.1rem; }
-        .domain-head .globe { width:34px; height:34px; border-radius:8px; flex:none;
-                              background:var(--accent-soft); color:var(--accent);
-                              display:grid; place-items:center; }
-        .domain-title { min-width:0; flex:1; }
-        .domain-title .name { font-size:1rem; font-weight:650; letter-spacing:-.01em;
-                              display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
-        .domain-title .name a { color:var(--text); }
-        .domain-meta { color:var(--text-muted); font-size:.82rem; margin-top:.15rem;
-                       display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
-        .domain-meta .sep { color:var(--border-strong); }
-        .domain-meta .path { font-family:var(--mono); font-size:.78rem; }
-        .domain-actions { display:flex; align-items:center; gap:.4rem; flex:none; }
+        /* --- domain list --------------------------------------------------
+           Collapsed it reads as a table; expanded, each row reveals its tools.
+           Built on <details> so it works with JavaScript disabled and stays
+           keyboard operable for free. */
+        .domain-list { background:var(--surface); border:1px solid var(--border);
+                       border-radius:var(--radius-lg); box-shadow:var(--shadow);
+                       overflow:hidden; }
+
+        /* One grid template shared by the header and every row, so columns line
+           up across cards the way a real table does. */
+        .domain-cols { display:grid; align-items:center; gap:.75rem;
+                       grid-template-columns:1.4rem minmax(0,2.4fr) minmax(0,1fr)
+                                             6rem 6.5rem; padding:.6rem 1.1rem; }
+
+        .domain-header { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+                         color:var(--text-muted); font-weight:700;
+                         border-bottom:1px solid var(--border); background:var(--surface-sunken); }
+
+        .domain { border-bottom:1px solid var(--border); }
+        .domain:last-child { border-bottom:0; }
+        .domain > summary { cursor:pointer; list-style:none; }
+        .domain > summary::-webkit-details-marker { display:none; }
+        .domain > summary:hover { background:var(--surface-sunken); }
+        .domain[open] > summary { background:var(--surface-sunken);
+                                  border-bottom:1px solid var(--border); }
+        .domain .chevron { color:var(--text-muted); transition:transform .15s ease; }
+        .domain[open] .chevron { transform:rotate(90deg); }
+
+        .domain-name { min-width:0; }
+        .domain-name .n { font-weight:600; letter-spacing:-.01em; display:flex;
+                          align-items:center; gap:.4rem; }
+        .domain-name .path { font-family:var(--mono); font-size:.74rem; color:var(--text-muted);
+                             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .domain-cell { font-size:.84rem; color:var(--text-muted); overflow:hidden;
+                       text-overflow:ellipsis; white-space:nowrap; }
 
         .tools { display:flex; flex-wrap:wrap; gap:.4rem; padding:.75rem 1.1rem;
-                 background:var(--surface-sunken); border-top:1px solid var(--border); }
+                 background:var(--surface-sunken); }
         .tool { display:flex; flex-direction:column; align-items:center; justify-content:center;
                 gap:.3rem; min-width:5.4rem; padding:.55rem .5rem; border-radius:var(--radius);
                 background:var(--surface); border:1px solid var(--border);
@@ -144,6 +161,8 @@
         .tool .icon { color:var(--text-muted); }
         .tool:hover .icon { color:var(--accent); }
         .tool.disabled { opacity:.5; pointer-events:none; }
+        .tool.danger { color:var(--danger); border-color:var(--danger-border); }
+        .tool.danger:hover { border-color:var(--danger); color:var(--danger); }
         .tool.disabled::after { content:"soon"; font-size:.6rem; text-transform:uppercase;
                                 letter-spacing:.05em; color:var(--text-muted); }
         .tool form { margin:0; }
@@ -201,6 +220,9 @@
             .topbar .brand { width:auto; }
             .search { display:none; }
             main { padding:1.1rem; }
+            /* Drop to name and chevron only; the rest is in the expanded row. */
+            .domain-cols { grid-template-columns:1.4rem 1fr; }
+            .domain-cols > .hide-sm { display:none; }
         }
     </style>
 </head>

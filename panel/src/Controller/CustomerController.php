@@ -22,7 +22,13 @@ final class CustomerController extends AbstractController
         ]);
     }
 
-    #[Route('/customers/new', name: 'customer_new', methods: ['POST'])]
+    #[Route('/customers/new', name: 'customer_new', methods: ['GET'])]
+    public function new(): Response
+    {
+        return $this->render('customer/new.html.twig');
+    }
+
+    #[Route('/customers/new', name: 'customer_create', methods: ['POST'])]
     public function create(Request $request): Response
     {
         $result = $this->api->post('/api/v1/customers', [
@@ -33,12 +39,14 @@ final class CustomerController extends AbstractController
 
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
-        } else {
-            $this->addFlash('ok', sprintf(
-                'Customer <strong>%s</strong> created.',
-                htmlspecialchars($result['username'])
-            ));
+
+            return $this->redirectToRoute('customer_new');
         }
+
+        $this->addFlash('ok', sprintf(
+            'Customer <strong>%s</strong> created.',
+            htmlspecialchars($result['username'])
+        ));
 
         return $this->redirectToRoute('customers');
     }

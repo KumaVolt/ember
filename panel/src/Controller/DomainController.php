@@ -32,7 +32,15 @@ final class DomainController extends AbstractController
         ]);
     }
 
-    #[Route('/domains/new', name: 'domain_new', methods: ['POST'])]
+    #[Route('/domains/new', name: 'domain_new', methods: ['GET'])]
+    public function new(): Response
+    {
+        return $this->render('domain/new.html.twig', [
+            'customers' => ($this->api->get('/api/v1/customers')['customers'] ?? []),
+        ]);
+    }
+
+    #[Route('/domains/new', name: 'domain_create', methods: ['POST'])]
     public function create(Request $request): Response
     {
         $result = $this->api->post('/api/v1/domains', [
@@ -44,7 +52,8 @@ final class DomainController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
 
-            return $this->redirectToRoute('domains');
+            // Back to the form, not the list: the operator has something to fix.
+            return $this->redirectToRoute('domain_new');
         }
 
         // Ember reports what it could and could not do — writing the vhost,
@@ -75,7 +84,8 @@ final class DomainController extends AbstractController
         if (null === $result || isset($result['error'])) {
             $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
 
-            return $this->redirectToRoute('domains');
+            // Back to the form, not the list: the operator has something to fix.
+            return $this->redirectToRoute('domain_new');
         }
 
         $message = 'Certificate issued.';

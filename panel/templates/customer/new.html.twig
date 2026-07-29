@@ -1,0 +1,44 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Add a customer{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Add a customer</h1>
+            <p>This creates a system account. Their sites run as that user, which is what
+               keeps one customer out of another's files.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('customers') }}">Cancel</a>
+    </header>
+
+    <div class="card" style="max-width:38rem">
+        <div class="body">
+            <form method="post" action="{{ path('customer_create') }}">
+                <label for="username">Username</label>
+                <input id="username" name="username" placeholder="acme"
+                       autocapitalize="none" spellcheck="false" required autofocus>
+                <p class="hint" style="color:var(--text-muted);font-size:.78rem;margin:-.7rem 0 .9rem">
+                    Lowercase letters, digits, <code class="mono">-</code> and
+                    <code class="mono">_</code>. This becomes the system account name.
+                </p>
+
+                <div class="row">
+                    <div>
+                        <label for="display_name">Display name</label>
+                        <input id="display_name" name="display_name" placeholder="Acme Ltd">
+                    </div>
+                    <div>
+                        <label for="email">Email</label>
+                        <input id="email" name="email" type="email" placeholder="ops@acme.com">
+                    </div>
+                </div>
+                <p class="hint" style="color:var(--text-muted);font-size:.78rem;margin:-.5rem 0 1rem">
+                    The email is used as the contact for their certificates.
+                </p>
+
+                <button class="btn" type="submit">{{ ui.icon('plus', 15) }} Create customer</button>
+            </form>
+        </div>
+    </div>
+{% endblock %}
