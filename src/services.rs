@@ -345,6 +345,121 @@ pub fn install(cfg: &Config, id: &str) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Node versions
+// ---------------------------------------------------------------------------
+
+/// Node releases offered for installation.
+///
+/// The distribution package is whatever it happens to ship — Debian 12 gives an
+/// end-of-life 18 — so anything current has to come from NodeSource. That is a
+/// third-party repository, which is why it is an explicit choice here rather
+/// than something the plain "install Node" button does quietly.
+pub const AVAILABLE_NODE: &[(&str, &str)] = &[
+    ("24", "current"),
+    ("22", "LTS"),
+    ("20", "LTS, security support only"),
+    ("18", "end of life"),
+];
+
+/// Which Node is installed, if any.
+pub fn node_version() -> Option<String> {
+    for path in ["/usr/bin/node", "/usr/local/bin/node"] {
+        if std::path::Path::new(path).is_file() {
+            let output = std::process::Command::new(path)
+                .arg("--version")
+                .output()
+                .ok()?;
+            return Some(
+                String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .trim_start_matches('v')
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+/// The major version currently installed, for marking the list.
+fn node_major() -> Option<String> {
+    node_version()?.split('.').next().map(str::to_string)
+}
+
+pub fn node_versions() -> Vec<serde_json::Value> {
+    let installed = node_major();
+    AVAILABLE_NODE
+        .iter()
+        .map(|(major, label)| {
+            serde_json::json!({
+                "major": major,
+                "label": label,
+                "installed": installed.as_deref() == Some(*major),
+            })
+        })
+        .collect()
+}
+
+/// Install a specific Node major from NodeSource.
+///
+/// Adding a third-party repository is a real decision, so it happens only when
+/// a version is asked for by name — never as a side effect of installing
+/// something else.
+pub fn install_node(cfg: &Config, major: &str) -> Result<String> {
+    cfg.require_host_mode(&format!("install Node {major}"))?;
+
+    if !AVAILABLE_NODE.iter().any(|(known, _)| *known == major) {
+        bail!("unknown Node version {major}");
+    }
+    if package_manager() != Some("apt") {
+        bail!("installing a specific Node version is only implemented for apt systems");
+    }
+
+    // NodeSource ships a setup script per major that adds its repository and
+    // key. Piping a remote script to a shell is what upstream documents; the
+    // panel says so plainly rather than hiding it.
+    let script = format!("https://deb.nodesource.com/setup_{major}.x");
+    let setup = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("curl -fsSL {script} | bash -"))
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .output()
+        .context("could not run the NodeSource setup script")?;
+
+    if !setup.status.success() {
+        bail!(
+            "could not add the NodeSource repository: {}",
+            String::from_utf8_lossy(&setup.stderr)
+                .lines()
+                .last()
+                .unwrap_or("unknown error")
+                .trim()
+        );
+    }
+
+    let install = std::process::Command::new("apt-get")
+        .args(["install", "-y", "-qq", "--no-install-recommends", "nodejs"])
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .output()
+        .context("could not run apt-get")?;
+
+    if !install.status.success() {
+        bail!(
+            "installing Node {major} failed: {}",
+            String::from_utf8_lossy(&install.stderr)
+                .lines()
+                .last()
+                .unwrap_or("unknown error")
+                .trim()
+        );
+    }
+
+    Ok(match node_version() {
+        Some(version) => format!("Node {version} installed"),
+        None => format!("Node {major} installed"),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Updates
 // ---------------------------------------------------------------------------
 

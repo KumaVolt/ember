@@ -313,12 +313,21 @@ else
       else
         say "could not install nginx; customer sites will not be served"
       fi
+      # Apache too, so a domain can be switched to it without installing
+      # anything first. Only one of them listens on port 80 at a time.
+      if apt-get install -y -qq --no-install-recommends apache2 >/dev/null 2>&1; then
+        a2enmod proxy_fcgi rewrite >/dev/null 2>&1 || true
+        say "installed apache (not started; nginx has port 80)"
+      fi
       ;;
     dnf|yum)
       if $PKG install -y -q nginx >/dev/null 2>&1; then
         say "installed nginx"
       else
         say "could not install nginx; customer sites will not be served"
+      fi
+      if $PKG install -y -q httpd >/dev/null 2>&1; then
+        say "installed apache (not started; nginx has port 80)"
       fi
       ;;
     *)
@@ -330,6 +339,12 @@ fi
 if command -v nginx >/dev/null 2>&1; then
   # Debian ships a default site on port 80 that would answer for every domain
   # that reaches this machine, including ones ember is configured to serve.
+  # Both installed means both would want port 80. nginx is the default, so
+  # apache stays stopped until a domain is switched to it.
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now apache2 >/dev/null 2>&1 || true
+  fi
+
   if [ -e /etc/nginx/sites-enabled/default ]; then
     rm -f /etc/nginx/sites-enabled/default
     say "removed nginx's catch-all default site"

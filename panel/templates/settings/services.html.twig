@@ -62,6 +62,49 @@
         </table>
     </div>
 
+    <div class="card">
+        <h2>Node.js versions</h2>
+        <div class="body" style="padding-bottom:.5rem">
+            <p style="margin:0 0 .5rem;color:var(--text-muted);font-size:.9rem">
+                {% if node_installed %}
+                    Installed: <strong class="mono">{{ node_installed }}</strong>.
+                {% else %}
+                    Not installed.
+                {% endif %}
+                Installing a version by name adds the <strong>NodeSource</strong> repository to
+                this server. The distribution's own package is whatever it ships — on Debian 12
+                that is an end-of-life release.
+            </p>
+            <p style="margin:0 0 .5rem;color:var(--text-muted);font-size:.82rem">
+                One Node is installed at a time: choosing a version replaces the current one.
+            </p>
+        </div>
+        <table>
+            <tr><th>Version</th><th>Support</th><th></th></tr>
+            {% for node in node_versions %}
+                <tr>
+                    <td class="mono"><strong>Node {{ node.major }}</strong></td>
+                    <td>
+                        <span class="badge {{ node.label == 'end of life' ? 'warn' : 'muted' }}">
+                            {{ node.label }}
+                        </span>
+                        {% if node.installed %}<span class="badge ok">installed</span>{% endif %}
+                    </td>
+                    <td style="text-align:right">
+                        {% if not node.installed %}
+                            <form method="post" action="{{ path('settings_service_install') }}"
+                                  onsubmit="this.querySelector('button').disabled = true;
+                                            this.querySelector('button').textContent = 'Installing…';">
+                                <input type="hidden" name="node" value="{{ node.major }}">
+                                <button class="btn ghost sm" type="submit">Install</button>
+                            </form>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+        </table>
+    </div>
+
     {% for category, services in grouped %}
         <div class="card">
             <h2>{{ category }}</h2>

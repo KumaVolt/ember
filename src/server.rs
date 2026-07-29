@@ -1194,6 +1194,8 @@ async fn resource_api(
             serde_json::json!({
                 "services": services::list(),
                 "engines": system::engine_versions().unwrap_or_default(),
+                "node_versions": services::node_versions(),
+                "node_installed": services::node_version(),
             }),
         ),
 
@@ -1217,6 +1219,24 @@ async fn resource_api(
                             StatusCode::OK,
                             serde_json::json!({ "installed": path.to_string_lossy() }),
                         ),
+                        Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                    },
+                ));
+            }
+
+            // A named Node major comes from NodeSource, which the plain
+            // package install deliberately does not touch.
+            if let Some(major) = field(&body, "node") {
+                let major = major.to_string();
+                let cfg = cfg.clone();
+                return Ok(Some(
+                    match tokio::task::spawn_blocking(move || services::install_node(&cfg, &major))
+                        .await?
+                    {
+                        Ok(message) => {
+                            esw::log_line(&format!("[{}] {actor}: {message}", daemon::now_secs()));
+                            api_json(StatusCode::OK, serde_json::json!({ "result": message }))
+                        }
                         Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
                     },
                 ));

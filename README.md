@@ -88,9 +88,11 @@ resolves its Composer dependencies, generates a unique `APP_SECRET`, installs a
 systemd unit with `EMBER_MODE=host`, starts it, and prints the URL to open.
 Visit that URL — the first page is setup.
 
-**nginx, MariaDB and certbot are installed by default**, so a fresh server can
-host a site, give it a database and get it a certificate without installing
-anything by hand. nginx's catch-all default site is removed, since it would
+**nginx, Apache, MariaDB and certbot are installed by default**, so a fresh
+server can host a site, give it a database and get it a certificate without
+installing anything by hand. Apache is installed but left stopped — both want
+port 80, and nginx is the default — so switching a domain to it needs no
+install first. nginx's catch-all default site is removed, since it would
 otherwise answer for every domain reaching the machine. Ember starts the web
 server and the database itself when they are installed but idle — on a systemd
 box that is a no-op, but in a container nothing else would.
@@ -381,10 +383,11 @@ Settings
 running, version — and installation through the distribution's package manager:
 MariaDB, PostgreSQL, Redis, nginx, Apache, certbot, Node.js, plus extra PHP
 versions for customer sites. Where Ember can install something but cannot yet *use* it — PostgreSQL, Redis
-and Node.js — the entry says so rather than implying more than exists. Node in
-particular installs whatever the distribution ships, which on Debian 12 is a
-release past end of life; the entry says that too, and Ember will not add a
-third-party repository to the machine on its own.
+and Node.js — the entry says so rather than implying more than exists. Node can be installed **by version** — 24, 22, 20, 18 — which pulls from
+NodeSource, since the distribution package is whatever it ships (Debian 12 gives
+an end-of-life 18). Adding a third-party repository only happens when a version
+is asked for by name, never as a side effect of installing something else. One
+Node is installed at a time.
 
 When nothing can be installed at all — a Mac has no `apt`, `dnf` or `yum` — the
 page says so once at the top rather than leaving a column of unexplained badges.

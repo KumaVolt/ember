@@ -84,6 +84,8 @@ final class SettingsController extends AbstractController
         return $this->render('settings/services.html.twig', [
             'grouped' => $grouped,
             'engines' => $result['engines'] ?? [],
+            'node_versions' => $result['node_versions'] ?? [],
+            'node_installed' => $result['node_installed'] ?? null,
         ]);
     }
 
@@ -93,6 +95,8 @@ final class SettingsController extends AbstractController
         $payload = [];
         if ($engine = $request->request->get('engine')) {
             $payload['engine'] = (string) $engine;
+        } elseif ($node = $request->request->get('node')) {
+            $payload['node'] = (string) $node;
         } else {
             $payload['id'] = (string) $request->request->get('id');
         }
