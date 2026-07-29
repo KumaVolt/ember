@@ -1,0 +1,127 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Server management{% endblock %}
+
+{% macro bytes(value) %}
+    {%- if value is null -%}—
+    {%- elseif value > 1073741824 -%}{{ (value / 1073741824)|round(1) }} GB
+    {%- elseif value > 1048576 -%}{{ (value / 1048576)|round(0) }} MB
+    {%- else -%}{{ (value / 1024)|round(0) }} KB
+    {%- endif -%}
+{% endmacro %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Server management</h1>
+            <p>{{ stats.hostname|default('this server') }} · {{ stats.kernel|default('') }}</p>
+        </div>
+        <a class="btn ghost" href="{{ path('settings') }}">Settings</a>
+    </header>
+
+    <div class="card">
+        <h2>Server statistics</h2>
+        <div class="body">
+            {% if stats.uptime_seconds is not defined %}
+                <p style="margin:0;color:var(--text-muted);font-size:.9rem">
+                    Detailed statistics come from <code class="mono">/proc</code>, which this
+                    machine does not have. Only what could be read is shown.
+                </p>
+            {% endif %}
+            <div class="tiles" style="margin:0">
+                <div class="tile">
+                    <div class="label">Uptime</div>
+                    <div class="value" style="font-size:1.15rem">
+                        {{ stats.uptime_seconds is defined
+                            ? (stats.uptime_seconds // 86400) ~ 'd ' ~ ((stats.uptime_seconds % 86400) // 3600) ~ 'h'
+                            : '—' }}
+                    </div>
+                </div>
+                <div class="tile">
+                    <div class="label">Load</div>
+                    <div class="value" style="font-size:1.15rem">
+                        {{ stats.load is defined ? stats.load|join(' · ') : '—' }}
+                    </div>
+                    <div class="sub">{{ stats.cpus|default(0) }} CPU{{ stats.cpus == 1 ? '' : 's' }}</div>
+                </div>
+                <div class="tile">
+                    <div class="label">Memory</div>
+                    <div class="value" style="font-size:1.15rem">
+                        {{ _self.bytes(stats.memory_available|default(null)) }}
+                    </div>
+                    <div class="sub">free of {{ _self.bytes(stats.memory_total|default(null)) }}</div>
+                </div>
+                <div class="tile">
+                    <div class="label">Swap</div>
+                    <div class="value" style="font-size:1.15rem">
+                        {{ _self.bytes(stats.swap_free|default(null)) }}
+                    </div>
+                    <div class="sub">free of {{ _self.bytes(stats.swap_total|default(null)) }}</div>
+                </div>
+            </div>
+
+            {% if stats.disks|default([]) is not empty %}
+                <table style="margin-top:1rem">
+                    <tr><th>Mount</th><th>Free</th><th>Total</th><th>Used</th></tr>
+                    {% for disk in stats.disks %}
+                        {% set used = disk.total > 0 ? ((disk.total - disk.available) / disk.total * 100)|round(0) : 0 %}
+                        <tr>
+                            <td class="mono">{{ disk.path }}</td>
+                            <td>{{ _self.bytes(disk.available) }}</td>
+                            <td>{{ _self.bytes(disk.total) }}</td>
+                            <td>
+                                <span class="badge {{ used > 90 ? 'warn' : 'muted' }}">{{ used }}%</span>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </table>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Server updates</h2>
+        <div class="body">
+            <p style="margin:0 0 .9rem;color:var(--text-muted);font-size:.9rem">
+                Checks this server's packages and whether a newer {{ brand.name }} has been
+                released. Nothing is checked in the background — only when you open it.
+            </p>
+            <a class="btn" href="{{ path('settings_updates') }}">Check for updates</a>
+        </div>
+    </div>
+
+    <div class="card" style="border-color:var(--danger-border)">
+        <h2 style="color:var(--danger)">Restart or shut down</h2>
+        <div class="body">
+            {% if mode != 'host' %}
+                <p style="margin:0;color:var(--text-muted);font-size:.9rem">
+                    Running in <strong>isolated mode</strong>, so {{ brand.name }} will not
+                    power this machine on or off.
+                </p>
+            {% else %}
+                <p style="margin:0 0 1rem;font-size:.9rem;color:var(--text-muted)">
+                    Every site on this server goes offline. A shut-down machine does not come
+                    back without console or provider access — there is no button here to undo it.
+                </p>
+
+                <form method="post" action="{{ path('settings_power') }}" style="max-width:26rem">
+                    <label for="confirm">
+                        Type the hostname <strong class="mono">{{ stats.hostname|default('') }}</strong> to confirm
+                    </label>
+                    <input id="confirm" name="confirm" autocomplete="off" spellcheck="false"
+                           placeholder="{{ stats.hostname|default('') }}" required>
+                    <div style="display:flex;gap:.5rem">
+                        <button class="btn ghost" type="submit" name="action" value="restart"
+                                onclick="return confirm('Restart {{ stats.hostname|default('this server') }}?')">
+                            Restart server
+                        </button>
+                        <button class="btn danger" type="submit" name="action" value="shutdown"
+                                onclick="return confirm('Shut down {{ stats.hostname|default('this server') }}? It will not come back on its own.')">
+                            Shut down server
+                        </button>
+                    </div>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+{% endblock %}

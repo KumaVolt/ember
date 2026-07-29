@@ -357,6 +357,43 @@ Being resident brings obligations that FPM handled for free:
 
 Pool size is `EMBER_WORKERS`, defaulting to 2–4 by core count.
 
+## Settings
+
+```
+Settings
+├── Server management
+│   ├── Server statistics    load, memory, swap, disks, uptime
+│   ├── Server updates       this server's packages, and Ember itself
+│   ├── Restart server
+│   └── Shut down server
+├── Services                 install PHP versions, databases, web servers
+└── Appearance               branding, languages
+```
+
+**Services** is a catalogue of components with their real state — installed,
+running, version — and installation through the distribution's package manager:
+MariaDB, PostgreSQL, Redis, nginx, Apache, certbot, plus extra PHP versions for
+customer sites. Where Ember can install something but cannot yet *use* it —
+PostgreSQL and Redis — the entry says so rather than implying more than exists.
+
+Nothing is removed from here. Uninstalling a database server out from under a
+customer's site is not worth putting behind one click.
+
+**Restart and shut down** are the most destructive actions in the product, so
+they require typing the machine's hostname, and are refused outright in isolated
+mode. Naming the machine is the point: an operator with several panels open
+should not be able to take down the wrong one from the wrong tab.
+
+Statistics come from `/proc` and `statvfs` directly rather than parsing `top` or
+`df`. On a machine without `/proc` the fields are simply absent rather than
+guessed.
+
+Update checking reaches GitHub and the package manager only when the page is
+opened — a panel that phones home on its own is what this is meant to avoid.
+Ember reports what the package manager says but does not apply system updates:
+an unattended upgrade of a database or web server is not something to do behind
+a button.
+
 ## Theming and white-labelling
 
 The panel ships a light theme with a blue accent, built on design tokens rather
@@ -372,7 +409,11 @@ $ EMBER_BRAND_NAME="Nimbus Hosting" \
   EMBER_BRAND_TAGLINE="Managed hosting control" ember start
 ```
 
-Or in `$EMBER_HOME/config.json`:
+Editable from **Settings → Appearance**, which writes to `config.json` and
+leaves every other setting in it alone. Values pinned by environment variables
+are shown as such rather than silently failing to save.
+
+Or set it directly in `$EMBER_HOME/config.json`:
 
 ```json
 { "branding": { "name": "Nimbus Hosting", "accent": "#7c3aed", "logo_url": "/logo.svg" } }

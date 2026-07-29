@@ -24,7 +24,7 @@ use crate::{
     daemon::{self, State as ServiceState},
     database,
     esw::{self, EswProcess, PoolAddr},
-    files, pages, store, vhost,
+    files, pages, services, store, system, vhost,
     worker::WorkerPool,
 };
 
@@ -757,7 +757,8 @@ async fn control_api(inner: &Inner, request: Request, path: &str, user: &str) ->
                 "/api/v1/summary", "/api/v1/customers", "/api/v1/domains",
                 "/api/v1/branding", "/api/v1/databases",
                 "/api/v1/domains/{id}/certificate",
-                "/api/v1/certificates/renew",
+                "/api/v1/certificates/renew", "/api/v1/services",
+                "/api/v1/system", "/api/v1/updates",
             ],
         }),
         "/api/v1/status" => serde_json::json!({
@@ -968,6 +969,7 @@ async fn resource_api(
                     "tagline": branding.tagline,
                     "accent": branding.safe_accent(),
                     "logo_url": branding.logo_url,
+                    "env_overrides": config::Branding::env_overrides(),
                 }),
             )
         }
@@ -1144,6 +1146,138 @@ async fn resource_api(
                 StatusCode::CREATED,
                 serde_json::json!({ "domain": domain, "notes": warnings }),
             )
+        }
+
+        // --- settings: services, updates, the machine ----------------------
+        (&Method::GET, "/api/v1/services") => api_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "services": services::list(),
+                "engines": system::engine_versions().unwrap_or_default(),
+            }),
+        ),
+
+        (&Method::POST, "/api/v1/services/install") => {
+            let body = json_body(request).await?;
+
+            // Installing an engine version is ember's own business; everything
+            // else is a distribution package.
+            if let Some(version) = field(&body, "engine") {
+                if !system::AVAILABLE_ENGINES.contains(&version) {
+                    return Ok(Some(api_error(
+                        StatusCode::BAD_REQUEST,
+                        "unknown engine version",
+                    )));
+                }
+                let version = version.to_string();
+                return Ok(Some(
+                    match tokio::task::spawn_blocking(move || esw::install(&version, false)).await?
+                    {
+                        Ok(path) => api_json(
+                            StatusCode::OK,
+                            serde_json::json!({ "installed": path.to_string_lossy() }),
+                        ),
+                        Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                    },
+                ));
+            }
+
+            let Some(id) = field(&body, "id").map(str::to_string) else {
+                return Ok(Some(api_error(StatusCode::BAD_REQUEST, "id is required")));
+            };
+
+            let cfg = cfg.clone();
+            // Package installs take minutes; a blocking task keeps the runtime
+            // free to serve the rest of the panel meanwhile.
+            match tokio::task::spawn_blocking(move || services::install(&cfg, &id)).await? {
+                Ok(message) => {
+                    esw::log_line(&format!("[{}] {actor}: {message}", daemon::now_secs()));
+                    api_json(StatusCode::OK, serde_json::json!({ "result": message }))
+                }
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
+        }
+
+        (&Method::GET, "/api/v1/system") => api_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "stats": system::stats(),
+                "mode": inner.mode.as_str(),
+            }),
+        ),
+
+        (&Method::GET, "/api/v1/updates") => {
+            let repo = std::env::var("EMBER_REPO").unwrap_or_else(|_| "KumaVolt/ember".into());
+            let (available, detail) = tokio::task::spawn_blocking(services::system_updates).await?;
+            let ember =
+                tokio::task::spawn_blocking(move || services::check_for_update(&repo)).await?;
+
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "ember": ember,
+                    "system": { "updates_available": available, "detail": detail },
+                }),
+            )
+        }
+
+        (&Method::POST, "/api/v1/system/power") => {
+            let body = json_body(request).await?;
+            let action = match system::PowerAction::parse(field(&body, "action").unwrap_or("")) {
+                Ok(action) => action,
+                Err(err) => return Ok(Some(api_error(StatusCode::BAD_REQUEST, &err.to_string()))),
+            };
+            let confirm = field(&body, "confirm").unwrap_or("");
+
+            match system::power(&cfg, action, confirm) {
+                Ok(message) => api_json(StatusCode::OK, serde_json::json!({ "result": message })),
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
+        }
+
+        (&Method::POST, "/api/v1/branding") => {
+            let body = json_body(request).await?;
+            let mut branding = config::Branding::resolve();
+
+            if let Some(name) = field(&body, "name") {
+                branding.name = name.to_string();
+            }
+            if let Some(tagline) = field(&body, "tagline") {
+                branding.tagline = tagline.to_string();
+            }
+            if let Some(accent) = field(&body, "accent") {
+                branding.accent = accent.to_string();
+            }
+            branding.logo_url = field(&body, "logo_url").map(str::to_string);
+
+            // Validate before writing, so a bad colour cannot be persisted and
+            // then break every page.
+            if branding.safe_accent() != branding.accent.trim() {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "that accent colour is not a usable CSS colour",
+                )));
+            }
+            if branding.name.trim().is_empty() {
+                return Ok(Some(api_error(StatusCode::BAD_REQUEST, "name is required")));
+            }
+
+            match branding.save() {
+                Ok(()) => {
+                    esw::log_line(&format!(
+                        "[{}] {actor} updated branding",
+                        daemon::now_secs()
+                    ));
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "branding": branding,
+                            "env_overrides": config::Branding::env_overrides(),
+                        }),
+                    )
+                }
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
         }
 
         // --- databases -----------------------------------------------------

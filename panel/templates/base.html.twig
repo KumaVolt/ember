@@ -295,7 +295,9 @@
                 {{ ui.icon('server') }} System
             </a>
             <a class="disabled">{{ ui.icon('chart') }} Statistics <span class="soon">soon</span></a>
-            <a class="disabled">{{ ui.icon('settings') }} Settings <span class="soon">soon</span></a>
+            <a href="{{ path('settings') }}" class="{{ route starts with 'settings' ? 'active' }}">
+                {{ ui.icon('settings') }} Settings
+            </a>
         </nav>
     </aside>
 

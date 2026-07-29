@@ -144,6 +144,47 @@ impl Default for Branding {
 }
 
 impl Branding {
+    /// Persist branding into `config.json`, leaving every other setting alone.
+    ///
+    /// Read-modify-write rather than serialising a whole `FileConfig`: the file
+    /// belongs to the operator, and rewriting it wholesale would silently drop
+    /// anything Ember does not currently model.
+    pub fn save(&self) -> Result<()> {
+        ensure_dirs()?;
+        let path = config_file()?;
+
+        let mut document: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        if !document.is_object() {
+            document = serde_json::json!({});
+        }
+        document["branding"] = serde_json::to_value(self)?;
+
+        std::fs::write(&path, serde_json::to_vec_pretty(&document)?)
+            .with_context(|| format!("could not write {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Which values are pinned by the environment and so cannot be edited.
+    ///
+    /// Surfaced rather than hidden: a form that silently fails to save because
+    /// an env var wins is worse than one that says so.
+    pub fn env_overrides() -> Vec<&'static str> {
+        [
+            ("name", "EMBER_BRAND_NAME"),
+            ("tagline", "EMBER_BRAND_TAGLINE"),
+            ("accent", "EMBER_BRAND_ACCENT"),
+            ("logo_url", "EMBER_BRAND_LOGO"),
+        ]
+        .iter()
+        .filter(|(_, var)| std::env::var(var).is_ok())
+        .map(|(field, _)| *field)
+        .collect()
+    }
+
     /// Environment wins over the config file, so a container can be rebranded
     /// without writing a config.
     pub fn resolve() -> Self {

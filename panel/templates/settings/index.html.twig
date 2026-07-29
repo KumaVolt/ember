@@ -1,0 +1,45 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Settings{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Settings</h1>
+            <p>The server, the components on it, and how the panel looks.</p>
+        </div>
+    </header>
+
+    {% set sections = [
+        {
+            title: 'Server management',
+            icon: 'server',
+            route: 'settings_server',
+            body: 'Statistics, updates, restart and shut down.'
+        },
+        {
+            title: 'Services',
+            icon: 'grid',
+            route: 'settings_services',
+            body: 'Install PHP versions, database servers, web servers and caches.'
+        },
+        {
+            title: 'Appearance',
+            icon: 'settings',
+            route: 'settings_appearance',
+            body: 'Branding and languages.'
+        }
+    ] %}
+
+    <div class="tiles">
+        {% for section in sections %}
+            <a class="tile" href="{{ path(section.route) }}" style="text-decoration:none;color:inherit;display:block">
+                <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
+                    <span style="color:var(--accent)">{{ ui.icon(section.icon, 17) }}</span>
+                    <strong>{{ section.title }}</strong>
+                </div>
+                <div class="sub">{{ section.body }}</div>
+            </a>
+        {% endfor %}
+    </div>
+{% endblock %}

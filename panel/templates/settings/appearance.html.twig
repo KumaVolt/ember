@@ -1,0 +1,71 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Appearance{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Appearance</h1>
+            <p>How the panel presents itself, including to your customers.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('settings') }}">Settings</a>
+    </header>
+
+    <div class="card" style="max-width:40rem">
+        <h2>Branding</h2>
+        <div class="body">
+            {% if branding.env_overrides|default([]) is not empty %}
+                <div class="flash error" style="margin-bottom:1rem">
+                    Pinned by environment variables and not editable here:
+                    <strong>{{ branding.env_overrides|join(', ') }}</strong>.
+                    Saving will not change them.
+                </div>
+            {% endif %}
+
+            <form method="post" action="{{ path('settings_appearance_save') }}">
+                <label for="name">Product name</label>
+                <input id="name" name="name" value="{{ branding.name|default('Ember') }}" required>
+
+                <label for="tagline">Tagline</label>
+                <input id="tagline" name="tagline" value="{{ branding.tagline|default('') }}">
+                <p style="color:var(--text-muted);font-size:.78rem;margin:-.7rem 0 .9rem">
+                    Shown under the name on the sign-in page.
+                </p>
+
+                <div class="row">
+                    <div>
+                        <label for="accent">Accent colour</label>
+                        <input id="accent" name="accent" value="{{ branding.accent|default('#2563eb') }}"
+                               oninput="document.documentElement.style.setProperty('--accent', this.value)">
+                    </div>
+                    <div>
+                        <label for="logo_url">Logo URL <span style="color:var(--text-muted)">— optional</span></label>
+                        <input id="logo_url" name="logo_url" value="{{ branding.logo_url|default('') }}"
+                               placeholder="/logo.svg">
+                    </div>
+                </div>
+                <p style="color:var(--text-muted);font-size:.78rem;margin:-.7rem 0 .9rem">
+                    The accent recolours the panel, the sign-in page, the tab icon and the
+                    default page on every parked domain. Type to preview it here.
+                </p>
+
+                <button class="btn" type="submit">Save appearance</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card" style="max-width:40rem">
+        <h2>Languages</h2>
+        <div class="body">
+            <p style="margin:0 0 .5rem">
+                <span class="badge muted">English</span>
+                <span class="badge muted">not yet translatable</span>
+            </p>
+            <p style="margin:0;color:var(--text-muted);font-size:.88rem">
+                The panel is English only. Translation needs the interface strings extracted
+                into catalogues first — the strings are currently written into the templates,
+                so this is real work rather than a setting waiting to be switched on.
+            </p>
+        </div>
+    </div>
+{% endblock %}

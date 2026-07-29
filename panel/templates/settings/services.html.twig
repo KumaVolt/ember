@@ -1,0 +1,104 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Services{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Services</h1>
+            <p>Components this server can run. Installing one takes a few minutes.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('settings') }}">Settings</a>
+    </header>
+
+    <div class="card">
+        <h2>PHP versions</h2>
+        <div class="body" style="padding-bottom:.5rem">
+            <p style="margin:0 0 .9rem;color:var(--text-muted);font-size:.9rem">
+                The panel runs on its own pinned build. Extra versions are for customer
+                sites — installing one leaves the panel's own engine untouched.
+            </p>
+        </div>
+        <table>
+            <tr><th>Version</th><th>Status</th><th></th></tr>
+            {% for engine in engines %}
+                <tr>
+                    <td class="mono"><strong>{{ engine.version }}</strong></td>
+                    <td>
+                        {% if engine.in_use %}
+                            <span class="badge ok">in use by the panel</span>
+                        {% elseif engine.installed %}
+                            <span class="badge muted">installed</span>
+                        {% else %}
+                            <span class="badge muted">not installed</span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align:right">
+                        {% if not engine.installed %}
+                            <form method="post" action="{{ path('settings_service_install') }}">
+                                <input type="hidden" name="engine" value="{{ engine.version }}">
+                                <button class="btn ghost sm" type="submit">Install</button>
+                            </form>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    {% for category, services in grouped %}
+        <div class="card">
+            <h2>{{ category }}</h2>
+            <table>
+                <tr><th>Service</th><th>Status</th><th>Version</th><th></th></tr>
+                {% for service in services %}
+                    <tr>
+                        <td>
+                            <strong>{{ service.name }}</strong>
+                            <div style="color:var(--text-muted);font-size:.82rem">{{ service.description }}</div>
+                            {% if service.note %}
+                                <div style="color:var(--warn);font-size:.8rem;margin-top:.2rem">
+                                    {{ service.note }}
+                                </div>
+                            {% endif %}
+                        </td>
+                        <td style="white-space:nowrap">
+                            {% if service.running %}
+                                <span class="badge ok"><span class="dot"></span>running</span>
+                            {% elseif service.installed %}
+                                <span class="badge warn">installed, stopped</span>
+                            {% else %}
+                                <span class="badge muted">not installed</span>
+                            {% endif %}
+                        </td>
+                        <td class="mono" style="max-width:14rem;overflow:hidden;text-overflow:ellipsis">
+                            {{ service.version|default('—') }}
+                        </td>
+                        <td style="text-align:right">
+                            {% if not service.installed %}
+                                {% if service.installable %}
+                                    <form method="post" action="{{ path('settings_service_install') }}"
+                                          onsubmit="this.querySelector('button').disabled = true;
+                                                    this.querySelector('button').textContent = 'Installing…';">
+                                        <input type="hidden" name="id" value="{{ service.id }}">
+                                        <button class="btn ghost sm" type="submit">Install</button>
+                                    </form>
+                                {% else %}
+                                    <span class="badge muted">unavailable here</span>
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        </div>
+    {% endfor %}
+
+    <div class="card">
+        <div class="body" style="color:var(--text-muted);font-size:.88rem">
+            Nothing is removed from here. Uninstalling a database server out from under a
+            customer's site is not something worth putting behind a single click — do it
+            from the shell, deliberately.
+        </div>
+    </div>
+{% endblock %}

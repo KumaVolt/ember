@@ -1,0 +1,64 @@
+{% extends 'base.html.twig' %}
+{% block title %}{{ brand.name }} — Server updates{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Server updates</h1>
+            <p>This server's packages, and {{ brand.name }} itself.</p>
+        </div>
+        <a class="btn ghost" href="{{ path('settings_server') }}">Server management</a>
+    </header>
+
+    <div class="card">
+        <h2>{{ brand.name }}</h2>
+        <div class="body">
+            <table>
+                <tr><td>Installed</td><td class="mono">{{ updates.ember.current|default('?') }}</td></tr>
+                <tr><td>Latest release</td><td class="mono">{{ updates.ember.latest|default('—') }}</td></tr>
+                <tr>
+                    <td>Status</td>
+                    <td>
+                        {% if updates.ember.update_available|default(false) %}
+                            <span class="badge warn">update available</span>
+                        {% elseif updates.ember.checked|default(false) %}
+                            <span class="badge ok">up to date</span>
+                        {% else %}
+                            <span class="badge muted">not checked</span>
+                        {% endif %}
+                        <span style="color:var(--text-muted);font-size:.85rem">
+                            {{ updates.ember.detail|default('') }}
+                        </span>
+                    </td>
+                </tr>
+            </table>
+            {% if updates.ember.update_available|default(false) %}
+                <p style="margin:1rem 0 0;color:var(--text-muted);font-size:.88rem">
+                    Upgrading is not automated yet. Re-run the installer to take the new
+                    release; your configuration and data are left alone.
+                </p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>System packages</h2>
+        <div class="body">
+            <p style="margin:0 0 .5rem">
+                {% if updates.system.updates_available|default(false) %}
+                    <span class="badge warn">updates available</span>
+                {% else %}
+                    <span class="badge ok">up to date</span>
+                {% endif %}
+                <span style="color:var(--text-muted);font-size:.9rem">
+                    {{ updates.system.detail|default('') }}
+                </span>
+            </p>
+            <p style="margin:0;color:var(--text-muted);font-size:.88rem">
+                {{ brand.name }} reports what the package manager says but does not apply
+                system updates for you — an unattended upgrade of a database or web server
+                is not something a panel should do behind a button.
+            </p>
+        </div>
+    </div>
+{% endblock %}
