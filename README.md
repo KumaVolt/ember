@@ -2,9 +2,27 @@
 
 A server control panel for Linux servers.
 
+> [!WARNING]
+> **Work in progress.** Ember is being built in the open and is not ready to run
+> anything you care about. It handles system accounts and passwords, and that
+> code has not been audited or run in anger. Expect breaking changes, missing
+> pieces, and sharp edges. Read [what is not done yet](#notes-on-what-is-not-done-yet)
+> before going near a real server.
+
+## Why this exists
+
+Another subscription went up in price, and I did not feel like paying it. So:
+an admin panel.
+
+That is the whole motivation. It also explains some of the choices — Ember is
+meant to be something you install on your own server and own outright, not
+something you rent. One binary, no control plane phoning home, no seat count.
+
+## What it is
+
 Ember is a single Rust binary that **is** the service. It supervises its own
 execution engine, terminates HTTP itself, authenticates against real system
-accounts, and hands requests to a Symfony application over FastCGI.
+accounts, and serves a Symfony panel from resident workers.
 
 The login and setup screens are rendered by Rust, not the panel — authentication
 lives where the PAM stack and the signing key are. Everything past the session
@@ -45,6 +63,22 @@ The panel pool is simply the first pool Ember supervises; per-site pools reuse
 the same machinery, each with its own version and its own system user.
 
 ## Install on a server
+
+> [!NOTE]
+> `get.ember.sh` does not exist yet — there are no published releases. Until
+> there are, build the binary yourself and point the installer at it:
+>
+> ```console
+> cargo build --release
+> sudo EMBER_BINARY_URL=file://$PWD/target/release/ember \
+>      EMBER_PANEL_SRC=$PWD/panel \
+>      sh install.sh
+> ```
+>
+> Or run the container, which does the same thing: `docker build -t ember . &&
+> docker run -d -p 7878:7878 -v ember-state:/var/lib/ember ember`
+
+Once releases exist, this is the whole install:
 
 ```console
 curl -fsSL https://get.ember.sh | sudo sh
@@ -343,6 +377,13 @@ Ember serves whatever `public/index.php` it finds and needs no Rust changes.
 
 ## Notes on what is not done yet
 
+- **The install one-liner does not work yet.** `https://get.ember.sh` does not
+  exist. There are no published releases, so `install.sh` currently needs
+  `EMBER_BINARY_URL` and `EMBER_PANEL_SRC` pointing at a local build.
+- **Customers, domains, and vhosts are not built.** The plan is customers mapped
+  to system accounts, each owning domains, each domain getting its own nginx or
+  apache vhost under `/var/www/vhosts/<domain>` scoped by user and group. None of
+  that exists yet.
 - **CSRF on the login form.** Mitigated by `SameSite=Lax` today, but a real
   token is the correct fix.
 - **TLS.** Session cookies are `HttpOnly` + `SameSite=Lax` but not yet `Secure`,
