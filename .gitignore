@@ -1,0 +1,6 @@
+/target
+/panel/vendor/
+/panel/var/
+/panel/.env.local
+/panel/.env.local.php
+.DS_Store

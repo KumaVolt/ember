@@ -1,0 +1,1024 @@
+//! The HTTP edge.
+//!
+//! Ember is the web server: it terminates HTTP itself and speaks FastCGI to the
+//! esw-engine pool it supervises — the same role nginx would play, minus nginx.
+//! Static files under the panel's `public/` are served directly; everything
+//! else goes to the Symfony front controller.
+
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+
+use anyhow::{Context, Result};
+use axum::{
+    Router,
+    body::Body,
+    extract::{Request, State},
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use fastcgi_client::{Client, Params, Request as FcgiRequest};
+
+use crate::{
+    accounts::{self, Source},
+    auth,
+    config::{self, Config},
+    daemon::{self, State as ServiceState},
+    esw::{self, EswProcess, PoolAddr},
+    pages,
+    worker::WorkerPool,
+};
+
+/// Request bodies larger than this are rejected rather than buffered.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone)]
+struct AppState(Arc<Inner>);
+
+struct Inner {
+    public_dir: PathBuf,
+    pool: PoolAddr,
+    host: String,
+    port: u16,
+    esw_version: String,
+    mode: config::Mode,
+    started_at: u64,
+    /// Present when the panel provides a worker entrypoint. Requests then skip
+    /// FastCGI entirely and go to a resident Symfony process.
+    workers: Option<Arc<WorkerPool>>,
+    /// Failed sign-in attempts, keyed by username. Brute force is the obvious
+    /// attack on a password form, so it is throttled from the start.
+    throttle: std::sync::Mutex<HashMap<String, Attempts>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Attempts {
+    count: u32,
+    locked_until: u64,
+}
+
+/// Failures tolerated before an account is briefly locked out.
+const MAX_ATTEMPTS: u32 = 5;
+/// How long a lockout lasts.
+const LOCKOUT_SECS: u64 = 15 * 60;
+
+/// Start PHP, bind the port, and serve until told to stop.
+pub async fn run(cfg: Config) -> Result<()> {
+    config::ensure_dirs()?;
+
+    esw::log_line(&format!(
+        "[{}] starting ember on {} with esw-engine {} in {} mode",
+        daemon::now_secs(),
+        cfg.addr(),
+        cfg.esw_version,
+        cfg.mode.as_str()
+    ));
+
+    // The engine comes up first: no point holding a port we cannot serve from.
+    let engine = EswProcess::spawn(&cfg)
+        .await
+        .context("could not start esw-engine")?;
+
+    let listener = tokio::net::TcpListener::bind(cfg.addr())
+        .await
+        .with_context(|| format!("could not bind {}", cfg.addr()))?;
+
+    // Worker mode when the panel opts in by shipping bin/esw-worker.php;
+    // otherwise fall back to FastCGI, which is what the placeholder needs.
+    let panel_dir = config::panel_dir()?;
+    let workers = if WorkerPool::script_path(&panel_dir).is_file() {
+        match WorkerPool::start(&cfg, panel_dir.clone(), worker_count()).await {
+            Ok(pool) => {
+                esw::log_line(&format!(
+                    "[{}] worker mode: {} resident symfony workers",
+                    daemon::now_secs(),
+                    pool.size()
+                ));
+                Some(pool)
+            }
+            Err(err) => {
+                // Falling back keeps the panel reachable instead of failing to
+                // boot, but this must be loud — it is a large silent slowdown.
+                esw::log_line(&format!(
+                    "[{}] worker mode unavailable, falling back to FastCGI: {err:#}",
+                    daemon::now_secs()
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let state = AppState(Arc::new(Inner {
+        public_dir: config::panel_public_dir()?,
+        pool: engine.addr.clone(),
+        host: cfg.host.clone(),
+        port: cfg.port,
+        esw_version: cfg.esw_version.clone(),
+        mode: cfg.mode,
+        started_at: daemon::now_secs(),
+        workers: workers.clone(),
+        throttle: std::sync::Mutex::new(HashMap::new()),
+    }));
+
+    let app = Router::new().fallback(handle).with_state(state);
+
+    // Only now do we claim to be running.
+    daemon::write_state(&ServiceState {
+        pid: std::process::id() as i32,
+        host: cfg.host.clone(),
+        port: cfg.port,
+        esw_version: cfg.esw_version.clone(),
+        mode: cfg.mode.as_str().to_string(),
+        started_at: daemon::now_secs(),
+    })?;
+
+    esw::log_line(&format!(
+        "[{}] ready — panel at {}",
+        daemon::now_secs(),
+        cfg.url()
+    ));
+
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await;
+
+    esw::log_line(&format!("[{}] shutting down", daemon::now_secs()));
+    if let Some(pool) = workers {
+        pool.shutdown().await;
+    }
+    engine.shutdown().await;
+    daemon::clear_state();
+
+    result.context("http server error")
+}
+
+/// Resolve on SIGTERM (from `ember stop`) or Ctrl-C (foreground runs).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
+async fn handle(State(state): State<AppState>, request: Request) -> Response {
+    match route(state, request).await {
+        Ok(response) => response,
+        Err(err) => {
+            esw::log_line(&format!("[{}] error: {err:#}", daemon::now_secs()));
+            (StatusCode::BAD_GATEWAY, format!("ember: {err}\n")).into_response()
+        }
+    }
+}
+
+async fn route(state: AppState, request: Request) -> Result<Response> {
+    let inner = &state.0;
+    let uri_path = request.uri().path().to_string();
+    let decoded = percent_decode(&uri_path);
+
+    // Reject traversal before touching the filesystem.
+    if decoded.split('/').any(|seg| seg == "..") {
+        return Ok((StatusCode::BAD_REQUEST, "bad path\n").into_response());
+    }
+
+    // Liveness is deliberately unauthenticated: orchestrators must be able to
+    // probe it, and it reveals nothing beyond "the process is up".
+    if decoded == "/healthz" {
+        return Ok((
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )],
+            serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "uptime_seconds": daemon::now_secs().saturating_sub(inner.started_at),
+            }))?,
+        )
+            .into_response());
+    }
+
+    if decoded == "/logout" {
+        return Ok(logout_response());
+    }
+
+    // Until an administrator exists there is nothing to sign in to, so every
+    // route funnels into setup.
+    let store = accounts::Store::load();
+    if store.is_empty() {
+        return match (decoded.as_str(), request.method()) {
+            ("/setup", &Method::GET) => {
+                Ok(html(StatusCode::OK, setup_page(&state, None, "admin", "")))
+            }
+            ("/setup", &Method::POST) => handle_setup(&state, request).await,
+            _ => Ok(redirect("/setup")),
+        };
+    }
+
+    // Setup is finished; do not let it be replayed.
+    if decoded == "/setup" {
+        return Ok(redirect("/login"));
+    }
+
+    if decoded == "/login" {
+        // A one-time URL from `ember login` still works and skips the form.
+        if request.uri().query().unwrap_or("").contains("token=") {
+            return redeem_login(&request);
+        }
+        return match *request.method() {
+            Method::GET => Ok(html(StatusCode::OK, pages::login(None, "", None))),
+            Method::POST => handle_password_login(&state, request).await,
+            _ => Ok((StatusCode::METHOD_NOT_ALLOWED, "method not allowed\n").into_response()),
+        };
+    }
+
+    let Some(user) = session_user(&request)? else {
+        return Ok(unauthenticated_response());
+    };
+
+    // Ember's own control plane. Reserved before the filesystem is consulted so
+    // a file dropped in `public/api/` can never shadow it. Privileged
+    // operations live here because PHP runs unprivileged and must ask for them.
+    if decoded == "/api/v1" || decoded.starts_with("/api/v1/") {
+        return control_api(inner, &decoded, &user);
+    }
+
+    let relative = decoded.trim_start_matches('/');
+    let candidate = inner.public_dir.join(relative);
+    let is_php = candidate.extension().and_then(|e| e.to_str()) == Some("php");
+
+    // Real, non-PHP files are served straight off disk.
+    if !relative.is_empty() && !is_php && candidate.is_file() {
+        return serve_static(&candidate).await;
+    }
+
+    // A directly requested .php file runs as itself; anything else falls
+    // through to the front controller, which is what Symfony expects.
+    let (script_path, script_name) = if is_php && candidate.is_file() {
+        (candidate, decoded.clone())
+    } else {
+        (inner.public_dir.join("index.php"), "/index.php".to_string())
+    };
+
+    if !script_path.is_file() {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            format!(
+                "ember: no panel application at {}\n\
+                 install Symfony there, or restart ember to restore the placeholder.\n",
+                inner.public_dir.display()
+            ),
+        )
+            .into_response());
+    }
+
+    if let Some(pool) = inner.workers.clone() {
+        return forward_to_worker(inner, pool, request, &decoded, &user).await;
+    }
+
+    forward_to_php(inner, request, &script_path, &script_name, &decoded, &user).await
+}
+
+/// Hand a request to a resident Symfony worker.
+async fn forward_to_worker(
+    inner: &Inner,
+    pool: Arc<WorkerPool>,
+    request: Request,
+    document_uri: &str,
+    user: &str,
+) -> Result<Response> {
+    let (parts, body) = request.into_parts();
+
+    let uri = match parts.uri.path_and_query() {
+        Some(pq) => pq.as_str().to_string(),
+        None => document_uri.to_string(),
+    };
+
+    let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .context("request body too large or unreadable")?;
+
+    let mut headers = HashMap::new();
+    let mut server = HashMap::new();
+    for (name, value) in parts.headers.iter() {
+        let Ok(value) = value.to_str() else { continue };
+        let key = name.as_str().to_ascii_lowercase();
+        // Identity is Ember's to state, never the client's.
+        if key == "remote-user" {
+            continue;
+        }
+        headers.insert(key.clone(), value.to_string());
+        server.insert(
+            format!("HTTP_{}", name.as_str().to_uppercase().replace('-', "_")),
+            value.to_string(),
+        );
+    }
+
+    let cookies = parts
+        .headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| {
+            raw.split(';')
+                .filter_map(|pair| pair.trim().split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    // The same CGI variables the FastCGI path sets, so the panel cannot tell
+    // which transport carried the request.
+    server.insert("REMOTE_USER".into(), user.to_string());
+    server.insert("EMBER_USER".into(), user.to_string());
+    server.insert("AUTH_TYPE".into(), "ember-session".into());
+    server.insert(
+        "SERVER_SOFTWARE".into(),
+        concat!("ember/", env!("CARGO_PKG_VERSION")).into(),
+    );
+    server.insert("SERVER_NAME".into(), inner.host.clone());
+    server.insert("SERVER_PORT".into(), inner.port.to_string());
+    server.insert("REMOTE_ADDR".into(), "127.0.0.1".into());
+    server.insert(
+        "DOCUMENT_ROOT".into(),
+        inner.public_dir.to_string_lossy().into_owned(),
+    );
+
+    let result = pool
+        .handle(
+            parts.method.as_str(),
+            &uri,
+            headers,
+            cookies,
+            server,
+            body_bytes.to_vec(),
+        )
+        .await?;
+
+    let mut builder = Response::builder()
+        .status(StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
+    for (name, values) in result.headers {
+        let Ok(header_name) = HeaderName::try_from(name.to_ascii_lowercase()) else {
+            continue;
+        };
+        for value in values {
+            if let Ok(header_value) = HeaderValue::from_str(&value) {
+                builder = builder.header(header_name.clone(), header_value);
+            }
+        }
+    }
+
+    builder
+        .body(Body::from(result.body))
+        .context("could not build the worker response")
+}
+
+/// How many resident workers to run.
+fn worker_count() -> usize {
+    if let Ok(raw) = std::env::var("EMBER_WORKERS")
+        && let Ok(count) = raw.parse::<usize>()
+        && count > 0
+    {
+        return count;
+    }
+    // Modest by default: this is a control panel, not a public site, and each
+    // worker holds a booted kernel in memory.
+    std::thread::available_parallelism()
+        .map(|n| n.get().clamp(2, 4))
+        .unwrap_or(2)
+}
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+fn cookie_value(request: &Request, name: &str) -> Option<String> {
+    request
+        .headers()
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.to_string())
+}
+
+fn session_user(request: &Request) -> Result<Option<String>> {
+    match cookie_value(request, auth::SESSION_COOKIE) {
+        Some(cookie) => auth::verify_session(&cookie),
+        None => Ok(None),
+    }
+}
+
+/// Exchange a one-time token from `ember login` for a session cookie.
+fn redeem_login(request: &Request) -> Result<Response> {
+    let token = request
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == "token")
+        .map(|(_, value)| percent_decode(value));
+
+    let Some(token) = token else {
+        return Ok(unauthenticated_response());
+    };
+
+    let Some(user) = auth::consume_login_token(&token)? else {
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            "ember: this login link is invalid, expired, or already used.\n\
+             run `ember login` again for a fresh one.\n",
+        )
+            .into_response());
+    };
+
+    let expires_at = daemon::now_secs() + auth::SESSION_TTL.as_secs();
+    let cookie = format!(
+        // No `Secure` yet — that arrives with TLS. HttpOnly keeps the session
+        // out of reach of panel JavaScript either way.
+        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+        auth::SESSION_COOKIE,
+        auth::sign_session(&user, expires_at)?,
+        auth::SESSION_TTL.as_secs()
+    );
+
+    esw::log_line(&format!(
+        "[{}] login: {user} redeemed a one-time token",
+        daemon::now_secs()
+    ));
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, "/")
+        .header(header::SET_COOKIE, cookie)
+        .body(Body::empty())
+        .context("could not build login response")
+}
+
+fn logout_response() -> Response {
+    let cookie = format!(
+        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+        auth::SESSION_COOKIE
+    );
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, "/")
+        .header(header::SET_COOKIE, cookie)
+        .body(Body::empty())
+        .expect("static logout response is always valid")
+}
+
+// ---------------------------------------------------------------------------
+// Setup and password sign-in
+// ---------------------------------------------------------------------------
+
+/// Parse an `application/x-www-form-urlencoded` body.
+fn parse_form(body: &str) -> HashMap<String, String> {
+    body.split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(key, value)| (form_decode(key), form_decode(value)))
+        .collect()
+}
+
+/// Like percent decoding, but `+` also means space in form bodies.
+fn form_decode(raw: &str) -> String {
+    percent_decode(&raw.replace('+', " "))
+}
+
+async fn read_form(request: Request) -> Result<HashMap<String, String>> {
+    let body = axum::body::to_bytes(request.into_body(), 64 * 1024)
+        .await
+        .context("form body too large")?;
+    Ok(parse_form(&String::from_utf8_lossy(&body)))
+}
+
+/// Ember can only create a real system account when it is allowed to modify the
+/// machine *and* has the privilege to do so.
+fn can_create_system_user(state: &AppState) -> bool {
+    state.0.mode == config::Mode::Host && auth::running_as_root()
+}
+
+fn setup_page(state: &AppState, error: Option<&str>, username: &str, email: &str) -> String {
+    pages::setup(error, username, email, can_create_system_user(state))
+}
+
+async fn handle_setup(state: &AppState, request: Request) -> Result<Response> {
+    let form = read_form(request).await?;
+    let username = form.get("username").map(String::as_str).unwrap_or("admin");
+    let email = form.get("email").map(String::as_str).unwrap_or("");
+    let password = form.get("password").map(String::as_str).unwrap_or("");
+    let confirm = form.get("confirm").map(String::as_str).unwrap_or("");
+
+    let fail = |message: String| -> Result<Response> {
+        Ok(html(
+            StatusCode::BAD_REQUEST,
+            setup_page(state, Some(&message), username, email),
+        ))
+    };
+
+    if password != confirm {
+        return fail("The two passwords do not match.".to_string());
+    }
+    if let Err(err) = accounts::check_username(username) {
+        return fail(err.to_string());
+    }
+    if let Err(err) = accounts::check_password_strength(password) {
+        return fail(err.to_string());
+    }
+
+    let mut store = accounts::Store::load();
+    if !store.is_empty() {
+        return Ok(redirect("/login"));
+    }
+
+    // A system-backed admin is preferable — the password then lives in the
+    // system database and every other tool agrees about it. Fall back to a
+    // local account when Ember is not permitted to touch this machine.
+    let mut source = Source::Local;
+    if can_create_system_user(state) {
+        if auth::system_user_exists(username) {
+            // Adopt the existing account rather than trying to recreate it.
+            source = Source::System;
+        } else {
+            match auth::create_system_user(username, "/bin/bash") {
+                Ok(()) => match auth::set_system_password(username, password) {
+                    Ok(()) => source = Source::System,
+                    Err(err) => {
+                        esw::log_line(&format!(
+                            "setup: created {username} but could not set its password: {err:#}"
+                        ));
+                        return fail(format!(
+                            "Created the system account but could not set its password: {err}"
+                        ));
+                    }
+                },
+                Err(err) => {
+                    esw::log_line(&format!("setup: could not create system user: {err:#}"));
+                    return fail(format!("Could not create the system account: {err}"));
+                }
+            }
+        }
+    }
+
+    let email = (!email.trim().is_empty()).then(|| email.trim().to_string());
+    if let Err(err) = store.create_admin(username, password, email, None, source) {
+        return fail(err.to_string());
+    }
+
+    esw::log_line(&format!(
+        "[{}] setup: administrator {username:?} created ({:?})",
+        daemon::now_secs(),
+        source
+    ));
+
+    issue_session(username)
+}
+
+async fn handle_password_login(state: &AppState, request: Request) -> Result<Response> {
+    let form = read_form(request).await?;
+    let username = form
+        .get("username")
+        .map(|u| u.trim().to_string())
+        .unwrap_or_default();
+    let password = form.get("password").cloned().unwrap_or_default();
+
+    // Deliberately identical for "no such account" and "wrong password" so the
+    // form cannot be used to enumerate usernames.
+    let generic = "Incorrect username or password.";
+
+    if let Some(remaining) = locked_for(state, &username) {
+        let minutes = remaining.div_ceil(60);
+        return Ok(html(
+            StatusCode::TOO_MANY_REQUESTS,
+            pages::login(
+                Some(&format!(
+                    "Too many failed attempts. Try again in {minutes} minute(s), or run `ember recover` on the server."
+                )),
+                &username,
+                None,
+            ),
+        ));
+    }
+
+    let store = accounts::Store::load();
+    let verified = match store.get(&username) {
+        Some(account) => match account.verify_password(&password) {
+            Ok(ok) => ok,
+            Err(err) => {
+                // A broken PAM stack must not be reported as a bad password.
+                esw::log_line(&format!("login: {username} could not be verified: {err:#}"));
+                return Ok(html(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    pages::login(
+                        Some("Authentication is misconfigured on this server. See `ember logs`."),
+                        &username,
+                        None,
+                    ),
+                ));
+            }
+        },
+        None => {
+            // Spend comparable effort on unknown users so response time does
+            // not reveal whether the account exists.
+            let _ = accounts::hash_password(&password);
+            false
+        }
+    };
+
+    if !verified {
+        record_failure(state, &username);
+        esw::log_line(&format!(
+            "[{}] login: failed attempt for {username:?}",
+            daemon::now_secs()
+        ));
+        return Ok(html(
+            StatusCode::UNAUTHORIZED,
+            pages::login(Some(generic), &username, None),
+        ));
+    }
+
+    clear_failures(state, &username);
+    esw::log_line(&format!(
+        "[{}] login: {username} signed in with a password",
+        daemon::now_secs()
+    ));
+    issue_session(&username)
+}
+
+/// Mint the session cookie and send the browser to the panel.
+fn issue_session(username: &str) -> Result<Response> {
+    let expires_at = daemon::now_secs() + auth::SESSION_TTL.as_secs();
+    let cookie = format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+        auth::SESSION_COOKIE,
+        auth::sign_session(username, expires_at)?,
+        auth::SESSION_TTL.as_secs()
+    );
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, "/")
+        .header(header::SET_COOKIE, cookie)
+        .body(Body::empty())
+        .context("could not build session response")
+}
+
+/// Seconds remaining on a lockout, if one is in force.
+fn locked_for(state: &AppState, username: &str) -> Option<u64> {
+    let throttle = state.0.throttle.lock().ok()?;
+    let attempts = throttle.get(username)?;
+    let now = daemon::now_secs();
+    (attempts.locked_until > now).then(|| attempts.locked_until - now)
+}
+
+fn record_failure(state: &AppState, username: &str) {
+    let Ok(mut throttle) = state.0.throttle.lock() else {
+        return;
+    };
+    let entry = throttle.entry(username.to_string()).or_insert(Attempts {
+        count: 0,
+        locked_until: 0,
+    });
+    entry.count += 1;
+    if entry.count >= MAX_ATTEMPTS {
+        entry.count = 0;
+        entry.locked_until = daemon::now_secs() + LOCKOUT_SECS;
+    }
+}
+
+fn clear_failures(state: &AppState, username: &str) {
+    if let Ok(mut throttle) = state.0.throttle.lock() {
+        throttle.remove(username);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Control API
+// ---------------------------------------------------------------------------
+
+/// Ember's privileged control plane, served by Rust rather than PHP.
+///
+/// The Symfony panel calls these endpoints for anything it cannot do itself —
+/// the PHP pool runs unprivileged by design, so system-level work is delegated
+/// here rather than handed to the web tier.
+fn control_api(inner: &Inner, path: &str, user: &str) -> Result<Response> {
+    let body = match path.trim_end_matches('/') {
+        "/api/v1" => serde_json::json!({
+            "service": "ember",
+            "version": env!("CARGO_PKG_VERSION"),
+            "endpoints": ["/api/v1/status", "/api/v1/whoami", "/api/v1/users"],
+        }),
+        "/api/v1/status" => serde_json::json!({
+            "status": "running",
+            "mode": inner.mode.as_str(),
+            "manages_this_machine": inner.mode == config::Mode::Host,
+            "pid": std::process::id(),
+            "host": inner.host,
+            "port": inner.port,
+            "uptime_seconds": daemon::now_secs().saturating_sub(inner.started_at),
+            "engine": {
+                "name": "esw-engine",
+                "version": inner.esw_version,
+                "pool": inner.pool.describe(),
+                "mode": if inner.workers.is_some() { "worker" } else { "fastcgi" },
+                "workers": inner.workers.as_ref().map(|p| p.size()),
+            },
+            "panel_root": inner.public_dir.to_string_lossy(),
+        }),
+        // Read-only: the panel lists accounts in either mode. Creating one is a
+        // mutation and lives behind the CLI's host-mode gate.
+        "/api/v1/users" => serde_json::json!({
+            "users": auth::list_system_users(1000),
+        }),
+        "/api/v1/whoami" => serde_json::json!({
+            "user": user,
+            "system_user": auth::system_user_exists(user),
+            "home": auth::system_user_home(user).map(|p| p.to_string_lossy().into_owned()),
+            "is_root": user == "root",
+        }),
+        _ => {
+            return Ok((
+                StatusCode::NOT_FOUND,
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )],
+                serde_json::to_vec(&serde_json::json!({ "error": "unknown endpoint" }))?,
+            )
+                .into_response());
+        }
+    };
+
+    Ok((
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        serde_json::to_vec_pretty(&body)?,
+    )
+        .into_response())
+}
+
+/// Send a browser to the login page rather than a bare 401 — a blank 401 reads
+/// as a broken panel.
+fn unauthenticated_response() -> Response {
+    redirect("/login")
+}
+
+fn redirect(location: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, location)
+        .body(Body::empty())
+        .expect("static redirect is always valid")
+}
+
+fn html(status: StatusCode, body: String) -> Response {
+    (
+        status,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response()
+}
+
+async fn serve_static(path: &std::path::Path) -> Result<Response> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("could not read {}", path.display()))?;
+    let mime = mime_for(path);
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, HeaderValue::from_static(mime))],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Build the CGI environment and hand the request to php-fpm.
+async fn forward_to_php(
+    inner: &Inner,
+    request: Request,
+    script_path: &std::path::Path,
+    script_name: &str,
+    document_uri: &str,
+    user: &str,
+) -> Result<Response> {
+    let (parts, body) = request.into_parts();
+    let query = parts.uri.query().unwrap_or("").to_string();
+    let request_uri = match parts.uri.path_and_query() {
+        Some(pq) => pq.as_str().to_string(),
+        None => document_uri.to_string(),
+    };
+
+    let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .context("request body too large or unreadable")?;
+
+    let content_type = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let script_filename = script_path.to_string_lossy().to_string();
+    let document_root = inner.public_dir.to_string_lossy().to_string();
+    let method = parts.method.as_str().to_string();
+
+    let mut params = Params::default()
+        .gateway_interface("CGI/1.1")
+        .server_software(concat!("ember/", env!("CARGO_PKG_VERSION")))
+        .server_protocol("HTTP/1.1")
+        .request_method(method)
+        .script_filename(script_filename)
+        .script_name(script_name.to_string())
+        .document_uri(document_uri.to_string())
+        .document_root(document_root)
+        .request_uri(request_uri)
+        .query_string(query)
+        .server_name(inner.host.clone())
+        .server_addr(inner.host.clone())
+        .server_port(inner.port)
+        .remote_addr("127.0.0.1")
+        .remote_port(0)
+        .content_type(content_type)
+        .content_length(body_bytes.len());
+
+    // Everything else the app might read arrives as HTTP_*. A client must not
+    // be able to forge identity, so its own REMOTE_USER header is dropped.
+    for (name, value) in parts.headers.iter() {
+        let Ok(value) = value.to_str() else { continue };
+        let key = format!("HTTP_{}", name.as_str().to_uppercase().replace('-', "_"));
+        if key == "HTTP_REMOTE_USER" {
+            continue;
+        }
+        params = params.custom(key, value.to_string());
+    }
+
+    // The authenticated system account. Symfony's `remote_user` authenticator
+    // reads exactly this, so the firewall needs no custom code.
+    params = params
+        .custom("REMOTE_USER", user.to_string())
+        .custom("EMBER_USER", user.to_string())
+        .custom("AUTH_TYPE", "ember-session");
+
+    // The pool listens on a unix socket normally, loopback TCP when the socket
+    // path would exceed the platform limit. Both speak the same protocol.
+    let response = match &inner.pool {
+        PoolAddr::Unix(path) => {
+            let stream = tokio::net::UnixStream::connect(path)
+                .await
+                .with_context(|| format!("could not reach esw-engine at {}", path.display()))?;
+            execute(stream, params, body_bytes.to_vec()).await
+        }
+        PoolAddr::Tcp(addr) => {
+            let stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .with_context(|| format!("could not reach esw-engine at {addr}"))?;
+            execute(stream, params, body_bytes.to_vec()).await
+        }
+    }?;
+
+    if let Some(stderr) = response.stderr.as_ref().filter(|s| !s.is_empty()) {
+        esw::log_line(&format!(
+            "esw-engine: {}",
+            String::from_utf8_lossy(stderr).trim()
+        ));
+    }
+
+    build_response(response.stdout.unwrap_or_default())
+}
+
+/// Run one FastCGI exchange over whichever transport the pool is using.
+async fn execute<S>(
+    stream: S,
+    params: Params<'_>,
+    body: Vec<u8>,
+) -> Result<fastcgi_client::Response>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    Client::new_tokio(stream)
+        .execute_once(FcgiRequest::new_tokio(params, std::io::Cursor::new(body)))
+        .await
+        .context("esw-engine request failed")
+}
+
+/// FastCGI returns a CGI document: headers, blank line, body.
+fn build_response(stdout: Vec<u8>) -> Result<Response> {
+    let split = find_subslice(&stdout, b"\r\n\r\n")
+        .map(|i| (i, 4))
+        .or_else(|| find_subslice(&stdout, b"\n\n").map(|i| (i, 2)));
+
+    let (head, body) = match split {
+        Some((idx, len)) => (&stdout[..idx], stdout[idx + len..].to_vec()),
+        // No header block at all — treat the whole thing as the body so PHP
+        // fatal errors are still visible instead of vanishing.
+        None => (&[][..], stdout.clone()),
+    };
+
+    let mut builder = Response::builder();
+    let mut status = StatusCode::OK;
+
+    for line in String::from_utf8_lossy(head).lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+
+        if name.eq_ignore_ascii_case("Status") {
+            if let Some(code) = value.split_whitespace().next()
+                && let Ok(parsed) = code.parse::<u16>()
+                && let Ok(parsed) = StatusCode::from_u16(parsed)
+            {
+                status = parsed;
+            }
+            continue;
+        }
+
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::try_from(name.to_ascii_lowercase()),
+            HeaderValue::from_str(value),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+
+    builder
+        .status(status)
+        .body(Body::from(body))
+        .context("could not build response from php-fpm output")
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Minimal `%XX` decoding — enough for static paths, no dependency needed.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn mime_for(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        "map" => "application/json",
+        _ => "application/octet-stream",
+    }
+}

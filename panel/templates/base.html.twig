@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{% block title %}Ember{% endblock %}</title>
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body { margin:0; background:#0e0f12; color:#e6e8ee; padding:3rem 1.5rem;
+               font:15px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+        main { max-width: 48rem; margin: 0 auto; }
+        header { display:flex; align-items:baseline; justify-content:space-between;
+                 gap:1rem; margin:0 0 2.25rem; flex-wrap:wrap; }
+        h1 { font-size:1.6rem; margin:0; letter-spacing:-.02em; }
+        h1 span { color:#ff7a45; }
+        .who { color:#8b90a0; font-size:.9rem; }
+        .who strong { color:#e6e8ee; font-weight:600; }
+        .who a { color:#8b90a0; margin-left:.75rem; }
+        .card { border:1px solid #23252c; border-radius:10px; padding:1.25rem 1.5rem;
+                margin:0 0 1rem; background:#14161a; }
+        .card h2 { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em;
+                   color:#8b90a0; margin:0 0 .9rem; font-weight:600; }
+        dl { display:grid; grid-template-columns:12rem 1fr; gap:.45rem 1rem; margin:0; }
+        dt { color:#8b90a0; }
+        dd { margin:0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+             font-size:.85rem; word-break:break-all; }
+        .badge { display:inline-block; padding:.1rem .5rem; border-radius:999px;
+                 font-size:.75rem; font-family:inherit; }
+        .badge.ok   { background:#123021; color:#4ade80; }
+        .badge.warn { background:#31240f; color:#fbbf24; }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>Ember<span>.</span></h1>
+        <p class="who">
+            Signed in as <strong>{{ app.user.userIdentifier }}</strong>
+            ({{ app.user.roles|join(', ') }})
+            <a href="/logout">Sign out</a>
+        </p>
+    </header>
+    {% block body %}{% endblock %}
+</main>
+</body>
+</html>

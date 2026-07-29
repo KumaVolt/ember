@@ -1,0 +1,24 @@
+security:
+    providers:
+        # Identity comes from Ember, not from a database in this application.
+        ember_users:
+            id: App\Security\EmberUserProvider
+
+    firewalls:
+        dev:
+            pattern: ^/(_profiler|_wdt|assets|build)/
+            security: false
+
+        main:
+            pattern: ^/
+            provider: ember_users
+            # Ember authenticates and owns the session cookie; Symfony must not
+            # start a competing session of its own.
+            stateless: true
+            # Reads $_SERVER['REMOTE_USER'], which Ember sets on every proxied
+            # request. No custom authenticator needed.
+            remote_user:
+                provider: ember_users
+
+    access_control:
+        - { path: ^/, roles: ROLE_USER }

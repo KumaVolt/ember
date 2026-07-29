@@ -1,0 +1,16 @@
+parameters:
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    App\:
+        resource: '../src/'
+
+    # Worker mode needs to reset request-scoped services between requests, but
+    # Symfony keeps the resetter private. Expose it under our own id so the
+    # worker loop can reach it without touching Symfony internals.
+    esw.services_resetter:
+        alias: services_resetter
+        public: true
