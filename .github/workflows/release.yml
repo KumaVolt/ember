@@ -1,0 +1,76 @@
+name: release
+
+# Publishes the binaries install.sh downloads. Tag a version to cut a release:
+#
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# The asset names must stay in step with install.sh, which fetches
+# ember-linux-<arch> from the release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ember links against libpam to check system passwords.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpam0g-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Check it runs
+        run: ./target/release/ember --version
+
+      - name: Stage the asset
+        run: |
+          install -m 755 target/release/ember "ember-linux-${{ matrix.arch }}"
+          sha256sum "ember-linux-${{ matrix.arch }}" > "ember-linux-${{ matrix.arch }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ember-linux-${{ matrix.arch }}
+          path: |
+            ember-linux-${{ matrix.arch }}
+            ember-linux-${{ matrix.arch }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ember-linux-*
+          generate_release_notes: true

@@ -1,19 +1,23 @@
 #!/bin/sh
 # Ember installer — set up the control panel on a fresh server.
 #
-#   curl -fsSL https://get.ember.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/KumaVolt/ember/main/install.sh | sh
 #
-# Or, pointing at a specific build:
+# Or, pointing at a specific release or a local build:
 #
-#   curl -fsSL https://get.ember.sh | EMBER_VERSION=0.1.0 sh
-#   EMBER_BINARY_URL=http://…/ember-linux-x86_64 sh install.sh
+#   … | EMBER_VERSION=v0.1.0 sh
+#   EMBER_BINARY_URL=file://$PWD/target/release/ember EMBER_PANEL_SRC=$PWD/panel sh install.sh
 #
 # POSIX sh on purpose: a fresh server may not have bash.
 
 set -eu
 
-EMBER_BASE_URL="${EMBER_BASE_URL:-https://get.ember.sh}"
+EMBER_REPO="${EMBER_REPO:-KumaVolt/ember}"
+EMBER_BASE_URL="${EMBER_BASE_URL:-https://github.com/$EMBER_REPO}"
+# A release tag such as v0.1.0, or "latest" to track the newest release.
 EMBER_VERSION="${EMBER_VERSION:-latest}"
+# Branch used for the panel when no release is pinned.
+EMBER_BRANCH="${EMBER_BRANCH:-main}"
 EMBER_BINARY_URL="${EMBER_BINARY_URL:-}"
 EMBER_PORT="${EMBER_PORT:-7878}"
 EMBER_PANEL_URL="${EMBER_PANEL_URL:-}"
@@ -33,7 +37,8 @@ die()  { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 step "Checking this machine"
 
-[ "$(id -u)" -eq 0 ] || die "run as root (try: curl -fsSL $EMBER_BASE_URL | sudo sh)"
+[ "$(id -u)" -eq 0 ] \
+  || die "run as root (try: curl -fsSL https://raw.githubusercontent.com/$EMBER_REPO/main/install.sh | sudo sh)"
 
 case "$(uname -s)" in
   Linux) ;;
@@ -98,15 +103,23 @@ step "Installing the ember binary"
 
 if [ -n "$EMBER_BINARY_URL" ]; then
   URL="$EMBER_BINARY_URL"
+elif [ "$EMBER_VERSION" = latest ]; then
+  URL="$EMBER_BASE_URL/releases/latest/download/ember-linux-$ARCH"
 else
-  URL="$EMBER_BASE_URL/releases/$EMBER_VERSION/ember-linux-$ARCH"
+  URL="$EMBER_BASE_URL/releases/download/$EMBER_VERSION/ember-linux-$ARCH"
 fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 say "downloading $URL"
-fetch "$URL" "$TMP/ember" || die "could not download the ember binary from $URL"
+fetch "$URL" "$TMP/ember" || die "could not download the ember binary from $URL
+
+  If no release has been published yet, build it and point the installer at it:
+
+      cargo build --release
+      sudo EMBER_BINARY_URL=file://\$PWD/target/release/ember \\
+           EMBER_PANEL_SRC=\$PWD/panel sh install.sh"
 [ -s "$TMP/ember" ] || die "downloaded binary is empty"
 
 chmod 755 "$TMP/ember"
@@ -184,17 +197,33 @@ PANEL_STAGED=no
 
 if [ -n "$EMBER_PANEL_SRC" ]; then
   say "using panel source from $EMBER_PANEL_SRC"
-  deploy_panel_from_dir "$EMBER_PANEL_SRC" && PANEL_STAGED=yes \
-    || say "panel source looked wrong — skipped"
+  if deploy_panel_from_dir "$EMBER_PANEL_SRC"; then
+    PANEL_STAGED=yes
+  else
+    say "panel source looked wrong — skipped"
+  fi
 else
-  PANEL_URL="${EMBER_PANEL_URL:-$EMBER_BASE_URL/releases/$EMBER_VERSION/ember-panel.tar.gz}"
+  if [ -n "$EMBER_PANEL_URL" ]; then
+    PANEL_URL="$EMBER_PANEL_URL"
+  elif [ "$EMBER_VERSION" = latest ]; then
+    # The panel lives in the repository, so it can be fetched straight from the
+    # branch archive — no release asset needed.
+    PANEL_URL="$EMBER_BASE_URL/archive/refs/heads/$EMBER_BRANCH.tar.gz"
+  else
+    PANEL_URL="$EMBER_BASE_URL/archive/refs/tags/$EMBER_VERSION.tar.gz"
+  fi
   say "downloading $PANEL_URL"
   if fetch "$PANEL_URL" "$TMP/panel.tar.gz" 2>/dev/null && [ -s "$TMP/panel.tar.gz" ]; then
     rm -rf "$TMP/panel" && mkdir -p "$TMP/panel"
     if tar xzf "$TMP/panel.tar.gz" -C "$TMP/panel" 2>/dev/null; then
+      # Accept either a panel-only tarball or a full repository archive.
       SRC="$TMP/panel"
-      [ -f "$SRC/public/index.php" ] || SRC="$TMP/panel/$(ls "$TMP/panel" | head -1)"
-      deploy_panel_from_dir "$SRC" && PANEL_STAGED=yes
+      if [ ! -f "$SRC/public/index.php" ]; then
+        SRC="$(find "$TMP/panel" -maxdepth 3 -type d -name panel 2>/dev/null | head -1)"
+      fi
+      if [ -n "$SRC" ] && [ -f "$SRC/public/index.php" ]; then
+        deploy_panel_from_dir "$SRC" && PANEL_STAGED=yes
+      fi
     fi
   fi
   [ "$PANEL_STAGED" = yes ] || say "no panel bundle available — keeping the built-in placeholder"

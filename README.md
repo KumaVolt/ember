@@ -64,9 +64,13 @@ the same machinery, each with its own version and its own system user.
 
 ## Install on a server
 
+```console
+curl -fsSL https://raw.githubusercontent.com/KumaVolt/ember/main/install.sh | sudo sh
+```
+
 > [!NOTE]
-> `get.ember.sh` does not exist yet — there are no published releases. Until
-> there are, build the binary yourself and point the installer at it:
+> This works today for everything except the binary, which needs a published
+> release. Until one is tagged, build it and point the installer at it:
 >
 > ```console
 > cargo build --release
@@ -75,35 +79,35 @@ the same machinery, each with its own version and its own system user.
 >      sh install.sh
 > ```
 >
-> Or run the container, which does the same thing: `docker build -t ember . &&
-> docker run -d -p 7878:7878 -v ember-state:/var/lib/ember ember`
+> Or run the container, which takes the same path:
+> `docker build -t ember . && docker run -d -p 7878:7878 -v ember-state:/var/lib/ember ember`
 
-Once releases exist, this is the whole install:
-
-```console
-curl -fsSL https://get.ember.sh | sudo sh
-```
-
-Installs the binary, writes `/etc/pam.d/ember`, provisions esw-engine, creates the
-unprivileged `ember-esw` account, deploys the panel and resolves its Composer
-dependencies, installs a systemd unit with `EMBER_MODE=host`, starts it, and
-prints the URL to open. Then visit that URL — the first page is setup.
+The installer puts the binary in place, writes `/etc/pam.d/ember`, provisions
+esw-engine, creates the unprivileged `ember-esw` account, deploys the panel and
+resolves its Composer dependencies, generates a unique `APP_SECRET`, installs a
+systemd unit with `EMBER_MODE=host`, starts it, and prints the URL to open.
+Visit that URL — the first page is setup.
 
 **The server needs no PHP and no Composer of its own.** `install.sh` runs
 Composer through `ember esw php`, the command-line half of the same pinned build
 that serves the panel — so what compiles the panel is exactly what runs it.
+
+**The panel comes from this repository**, not a release asset: the installer
+pulls the branch (or tag) archive and uses `panel/` from it.
 
 **The container runs this same script.** The Dockerfile compiles the binary and
 then calls `install.sh` in build mode (`EMBER_SKIP_SERVICE=1`); it does not
 reimplement any setup step. One code path, so a container and a real install
 cannot drift apart.
 
-| Variable | Purpose |
-| --- | --- |
-| `EMBER_BINARY_URL` | Install a specific binary instead of a published release |
-| `EMBER_PANEL_SRC` | Deploy the panel from a local directory |
-| `EMBER_PANEL_URL` | Deploy the panel from a specific tarball |
-| `EMBER_SKIP_SERVICE` | Install everything, start nothing (image builds) |
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `EMBER_REPO` | Repository to install from | `KumaVolt/ember` |
+| `EMBER_VERSION` | Release tag, or `latest` | `latest` |
+| `EMBER_BRANCH` | Branch used for the panel when untagged | `main` |
+| `EMBER_BINARY_URL` | Install a specific binary | — |
+| `EMBER_PANEL_SRC` | Deploy the panel from a local directory | — |
+| `EMBER_SKIP_SERVICE` | Install everything, start nothing | — |
 
 ## Authentication
 
@@ -377,9 +381,11 @@ Ember serves whatever `public/index.php` it finds and needs no Rust changes.
 
 ## Notes on what is not done yet
 
-- **The install one-liner does not work yet.** `https://get.ember.sh` does not
-  exist. There are no published releases, so `install.sh` currently needs
-  `EMBER_BINARY_URL` and `EMBER_PANEL_SRC` pointing at a local build.
+- **No published release yet.** The installer fetches the panel from this
+  repository, but the binary comes from a GitHub release, and none is tagged.
+  Until one is, pass `EMBER_BINARY_URL` pointing at a local build. Tagging
+  `v*` runs `.github/workflows/release.yml`, which builds and publishes the
+  x86_64 and aarch64 binaries the installer expects.
 - **Customers, domains, and vhosts are not built.** The plan is customers mapped
   to system accounts, each owning domains, each domain getting its own nginx or
   apache vhost under `/var/www/vhosts/<domain>` scoped by user and group. None of
