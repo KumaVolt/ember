@@ -1,4 +1,5 @@
 {% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
 {% block title %}{{ brand.name }} — Customers{% endblock %}
 
 {% block body %}
@@ -41,7 +42,7 @@
             <table>
                 <tr><th>Customer</th><th>System account</th><th>Email</th><th>Domains</th><th></th></tr>
                 {% for customer in customers %}
-                    <tr>
+                    <tr data-filter="{{ (customer.username ~ ' ' ~ (customer.display_name ?: '') ~ ' ' ~ (customer.email ?: ''))|lower }}">
                         <td><strong>{{ customer.display_name ?: customer.username }}</strong></td>
                         <td class="mono">{{ customer.username }}</td>
                         <td>{{ customer.email ?: '—' }}</td>
@@ -49,7 +50,7 @@
                         <td style="text-align:right">
                             <form method="post" action="{{ path('customer_delete', {id: customer.id}) }}"
                                   onsubmit="return confirm('Remove {{ customer.username }}?')">
-                                <button class="btn danger" type="submit">Remove</button>
+                                <button class="btn danger sm" type="submit">{{ ui.icon('trash', 13) }} Remove</button>
                             </form>
                         </td>
                     </tr>

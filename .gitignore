@@ -1,6 +1,7 @@
-/target
-/panel/vendor/
-/panel/var/
-/panel/.env.local
-/panel/.env.local.php
+target/
+panel/vendor/
+panel/var/
+panel/.env.local
+panel/.env.local.php
+.playwright-mcp/
 .DS_Store

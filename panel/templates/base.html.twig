@@ -1,9 +1,19 @@
+{% import '_icons.html.twig' as ui %}
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>{% block title %}{{ brand.name }}{% endblock %}</title>
+    {# Inline data URI: no extra request, no 404, and it picks up the operator's
+       accent so a white-labelled panel gets its own tab icon for free. #}
+    <link rel="icon" href="data:image/svg+xml,{{ (
+        '<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 32 32\'>'
+        ~ '<rect width=\'32\' height=\'32\' rx=\'7\' fill=\'' ~ brand.accent ~ '\'/>'
+        ~ '<text x=\'16\' y=\'22\' font-family=\'system-ui,sans-serif\' font-size=\'18\''
+        ~ ' font-weight=\'700\' fill=\'white\' text-anchor=\'middle\'>'
+        ~ brand.name|slice(0,1)|upper ~ '</text></svg>'
+    )|url_encode }}">
     <style>
         /* Design tokens. Every colour resolves through these, so theming is an
            override of this block rather than a hunt through the stylesheet.
@@ -11,12 +21,13 @@
         :root {
             --accent: {{ brand.accent }};
             --accent-contrast: #ffffff;
-            --bg: #f1f5f9;
+            --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+            --bg: #eef2f6;
             --surface: #ffffff;
             --surface-sunken: #f8fafc;
-            --border: #e2e8f0;
+            --border: #e3e8ef;
             --border-strong: #cbd5e1;
-            --text: #0f172a;
+            --text: #1a2230;
             --text-muted: #64748b;
             --danger: #b91c1c;
             --danger-bg: #fef2f2;
@@ -25,134 +36,227 @@
             --success-bg: #f0fdf4;
             --warn: #a16207;
             --warn-bg: #fefce8;
-            --radius: 8px;
-            --radius-lg: 12px;
-            --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px rgba(15,23,42,.06);
+            --radius: 6px;
+            --radius-lg: 10px;
+            --shadow: 0 1px 2px rgba(16,24,40,.05);
+            --shadow-lift: 0 1px 3px rgba(16,24,40,.08), 0 6px 18px rgba(16,24,40,.06);
             --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
             --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-            --sidebar: 15rem;
+            --sidebar: 14.5rem;
+            --topbar: 3.25rem;
         }
 
         * { box-sizing: border-box; }
-        body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 var(--font); }
-        a { color:var(--accent); }
+        body { margin:0; background:var(--bg); color:var(--text); font:14.5px/1.55 var(--font); }
+        a { color:var(--accent); text-decoration:none; }
+        a:hover { text-decoration:underline; }
+        .icon { flex:none; vertical-align:-.2em; }
 
-        .shell { display:grid; grid-template-columns:var(--sidebar) 1fr; min-height:100vh; }
+        /* --- frame ------------------------------------------------------- */
+        .shell { display:grid; grid-template-columns:var(--sidebar) 1fr;
+                 grid-template-rows:var(--topbar) 1fr; min-height:100vh; }
+
+        .topbar { grid-column:1 / -1; display:flex; align-items:center; gap:1rem;
+                  background:var(--surface); border-bottom:1px solid var(--border);
+                  padding:0 1rem; position:sticky; top:0; z-index:10; }
+        .topbar .brand { display:flex; align-items:center; gap:.5rem; font-weight:650;
+                         font-size:1.02rem; letter-spacing:-.01em; width:calc(var(--sidebar) - 1rem);
+                         color:var(--text); }
+        .topbar .brand img { height:22px; width:auto; }
+        .topbar .brand .mark { width:22px; height:22px; border-radius:5px; flex:none;
+                               background:var(--accent); color:var(--accent-contrast);
+                               display:grid; place-items:center; font-size:.72rem; font-weight:700; }
+        .search { flex:1; max-width:26rem; position:relative; }
+        .search input { width:100%; padding:.4rem .6rem .4rem 2rem; font-size:.88rem;
+                        border:1px solid var(--border-strong); border-radius:var(--radius);
+                        background:var(--surface-sunken); color:var(--text); font-family:inherit; }
+        .search input:focus { outline:none; background:var(--surface); border-color:var(--accent);
+                        box-shadow:0 0 0 3px var(--accent-soft); }
+        .search .icon { position:absolute; left:.55rem; top:50%; transform:translateY(-50%);
+                        color:var(--text-muted); pointer-events:none; }
+        .whoami { margin-left:auto; display:flex; align-items:center; gap:.6rem;
+                  font-size:.86rem; color:var(--text-muted); }
+        .whoami .avatar { width:26px; height:26px; border-radius:50%; background:var(--accent-soft);
+                          color:var(--accent); display:grid; place-items:center;
+                          font-weight:700; font-size:.75rem; }
+        .whoami strong { color:var(--text); font-weight:600; }
 
         aside { background:var(--surface); border-right:1px solid var(--border);
-                padding:1.25rem 0; display:flex; flex-direction:column; }
-        .brand { display:flex; align-items:center; gap:.55rem; padding:0 1.25rem 1.25rem;
-                 font-weight:650; font-size:1.1rem; letter-spacing:-.02em; }
-        .brand img { height:24px; width:auto; }
-        nav { display:flex; flex-direction:column; gap:.1rem; padding:0 .6rem; }
-        nav a { display:flex; align-items:center; gap:.6rem; padding:.5rem .65rem;
-                border-radius:var(--radius); color:var(--text); text-decoration:none;
-                font-size:.92rem; }
-        nav a:hover { background:var(--surface-sunken); }
-        nav a.active { background:color-mix(in srgb, var(--accent) 10%, transparent);
-                       color:var(--accent); font-weight:600; }
-        nav a svg { width:17px; height:17px; flex:none; }
-        .nav-foot { margin-top:auto; padding:1rem 1.25rem 0; border-top:1px solid var(--border);
-                    font-size:.82rem; color:var(--text-muted); }
-        .nav-foot strong { color:var(--text); display:block; font-weight:600; }
+                padding:.85rem .6rem; }
+        aside .group { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em;
+                       color:var(--text-muted); font-weight:700; padding:.7rem .65rem .3rem; }
+        nav a { display:flex; align-items:center; gap:.6rem; padding:.48rem .65rem;
+                border-radius:var(--radius); color:var(--text); font-size:.9rem; }
+        nav a:hover { background:var(--surface-sunken); text-decoration:none; }
+        nav a.active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+        nav a.disabled { color:#9aa4b2; pointer-events:none; }
+        nav a.disabled .soon { margin-left:auto; font-size:.62rem; text-transform:uppercase;
+                               letter-spacing:.05em; color:#9aa4b2; }
 
-        main { padding:1.75rem 2rem 3rem; min-width:0; }
+        main { padding:1.5rem 1.75rem 3rem; min-width:0; }
         header.page { display:flex; align-items:flex-start; justify-content:space-between;
-                      gap:1rem; margin:0 0 1.5rem; flex-wrap:wrap; }
-        header.page h1 { font-size:1.35rem; margin:0; letter-spacing:-.02em; }
-        header.page p { margin:.15rem 0 0; color:var(--text-muted); font-size:.9rem; }
+                      gap:1rem; margin:0 0 1.25rem; flex-wrap:wrap; }
+        header.page h1 { font-size:1.3rem; margin:0; letter-spacing:-.02em; }
+        header.page p { margin:.1rem 0 0; color:var(--text-muted); font-size:.88rem; }
 
+        /* --- surfaces ---------------------------------------------------- */
         .card { background:var(--surface); border:1px solid var(--border);
                 border-radius:var(--radius-lg); box-shadow:var(--shadow); margin:0 0 1rem; }
-        .card > h2 { font-size:.95rem; margin:0; padding:.9rem 1.25rem;
-                     border-bottom:1px solid var(--border); font-weight:600; }
-        .card .body { padding:1.25rem; }
+        .card > h2 { font-size:.92rem; margin:0; padding:.8rem 1.1rem; font-weight:600;
+                     border-bottom:1px solid var(--border); }
+        .card .body { padding:1.1rem; }
 
-        .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));
-                 gap:1rem; margin:0 0 1.5rem; }
+        .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(10.5rem,1fr));
+                 gap:.85rem; margin:0 0 1.25rem; }
         .tile { background:var(--surface); border:1px solid var(--border);
-                border-radius:var(--radius-lg); padding:1.1rem 1.25rem; box-shadow:var(--shadow); }
-        .tile .label { color:var(--text-muted); font-size:.78rem; text-transform:uppercase;
-                       letter-spacing:.06em; font-weight:600; }
-        .tile .value { font-size:1.6rem; font-weight:650; letter-spacing:-.02em; margin-top:.15rem; }
-        .tile .sub { color:var(--text-muted); font-size:.82rem; }
+                border-radius:var(--radius-lg); padding:.95rem 1.1rem; box-shadow:var(--shadow); }
+        .tile .label { color:var(--text-muted); font-size:.74rem; text-transform:uppercase;
+                       letter-spacing:.06em; font-weight:700; }
+        .tile .value { font-size:1.5rem; font-weight:650; letter-spacing:-.02em; margin-top:.1rem; }
+        .tile .sub { color:var(--text-muted); font-size:.8rem; }
 
+        /* --- domain cards ------------------------------------------------ */
+        .domain { background:var(--surface); border:1px solid var(--border);
+                  border-radius:var(--radius-lg); box-shadow:var(--shadow); margin:0 0 .9rem;
+                  overflow:hidden; }
+        .domain:hover { box-shadow:var(--shadow-lift); }
+        .domain-head { display:flex; align-items:flex-start; gap:.75rem; padding:.95rem 1.1rem; }
+        .domain-head .globe { width:34px; height:34px; border-radius:8px; flex:none;
+                              background:var(--accent-soft); color:var(--accent);
+                              display:grid; place-items:center; }
+        .domain-title { min-width:0; flex:1; }
+        .domain-title .name { font-size:1rem; font-weight:650; letter-spacing:-.01em;
+                              display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
+        .domain-title .name a { color:var(--text); }
+        .domain-meta { color:var(--text-muted); font-size:.82rem; margin-top:.15rem;
+                       display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+        .domain-meta .sep { color:var(--border-strong); }
+        .domain-meta .path { font-family:var(--mono); font-size:.78rem; }
+        .domain-actions { display:flex; align-items:center; gap:.4rem; flex:none; }
+
+        .tools { display:flex; flex-wrap:wrap; gap:.4rem; padding:.75rem 1.1rem;
+                 background:var(--surface-sunken); border-top:1px solid var(--border); }
+        .tool { display:flex; flex-direction:column; align-items:center; justify-content:center;
+                gap:.3rem; min-width:5.4rem; padding:.55rem .5rem; border-radius:var(--radius);
+                background:var(--surface); border:1px solid var(--border);
+                font-size:.74rem; color:var(--text); text-align:center; line-height:1.2; }
+        .tool:hover { border-color:var(--accent); color:var(--accent); text-decoration:none; }
+        .tool .icon { color:var(--text-muted); }
+        .tool:hover .icon { color:var(--accent); }
+        .tool.disabled { opacity:.5; pointer-events:none; }
+        .tool.disabled::after { content:"soon"; font-size:.6rem; text-transform:uppercase;
+                                letter-spacing:.05em; color:var(--text-muted); }
+        .tool form { margin:0; }
+        .tool button { all:unset; cursor:pointer; display:flex; flex-direction:column;
+                       align-items:center; gap:.3rem; }
+
+        /* --- bits -------------------------------------------------------- */
         table { width:100%; border-collapse:collapse; }
-        th { text-align:left; font-size:.75rem; text-transform:uppercase; letter-spacing:.06em;
-             color:var(--text-muted); padding:.6rem 1.25rem; border-bottom:1px solid var(--border); }
-        td { padding:.75rem 1.25rem; border-bottom:1px solid var(--border); font-size:.92rem;
-             vertical-align:middle; }
+        th { text-align:left; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--text-muted); padding:.55rem 1.1rem; border-bottom:1px solid var(--border); }
+        td { padding:.7rem 1.1rem; border-bottom:1px solid var(--border); font-size:.9rem; }
         tr:last-child td { border-bottom:0; }
-        td.mono, .mono { font-family:var(--mono); font-size:.85rem; color:var(--text-muted); }
+        td.mono, .mono { font-family:var(--mono); font-size:.82rem; color:var(--text-muted); }
 
-        .badge { display:inline-block; padding:.1rem .5rem; border-radius:999px;
-                 font-size:.75rem; font-weight:600; }
+        .badge { display:inline-flex; align-items:center; gap:.25rem; padding:.08rem .45rem;
+                 border-radius:999px; font-size:.72rem; font-weight:600; }
         .badge.ok    { background:var(--success-bg); color:var(--success); }
         .badge.warn  { background:var(--warn-bg);    color:var(--warn); }
-        .badge.muted { background:var(--surface-sunken); color:var(--text-muted); }
+        .badge.muted { background:var(--surface-sunken); color:var(--text-muted);
+                       border:1px solid var(--border); }
+        .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
 
-        .btn { display:inline-block; padding:.45rem .85rem; border-radius:var(--radius);
-               background:var(--accent); color:var(--accent-contrast); border:0;
-               font:inherit; font-size:.88rem; font-weight:600; cursor:pointer;
-               text-decoration:none; }
-        .btn:hover { filter:brightness(1.08); }
-        .btn.ghost { background:transparent; color:var(--text); border:1px solid var(--border-strong); }
-        .btn.danger { background:transparent; color:var(--danger);
-                      border:1px solid var(--danger-border); }
+        .btn { display:inline-flex; align-items:center; gap:.35rem; padding:.38rem .7rem;
+               border-radius:var(--radius); background:var(--accent); color:var(--accent-contrast);
+               border:1px solid transparent; font:inherit; font-size:.84rem; font-weight:600;
+               cursor:pointer; }
+        .btn:hover { filter:brightness(1.07); text-decoration:none; }
+        .btn.ghost { background:var(--surface); color:var(--text); border-color:var(--border-strong); }
+        .btn.ghost:hover { border-color:var(--accent); color:var(--accent); filter:none; }
+        .btn.danger { background:var(--surface); color:var(--danger); border-color:var(--danger-border); }
+        .btn.sm { padding:.25rem .5rem; font-size:.78rem; }
 
-        label { display:block; font-size:.85rem; font-weight:500; margin:0 0 .35rem; }
-        input, select { width:100%; padding:.5rem .65rem; margin:0 0 1rem;
+        label { display:block; font-size:.82rem; font-weight:500; margin:0 0 .3rem; }
+        input, select { width:100%; padding:.45rem .6rem; margin:0 0 .9rem;
                         border-radius:var(--radius); border:1px solid var(--border-strong);
-                        background:var(--surface); color:var(--text); font:inherit;
-                        font-size:.92rem; }
+                        background:var(--surface); color:var(--text); font:inherit; font-size:.88rem; }
         input:focus, select:focus { outline:none; border-color:var(--accent);
-                        box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-        .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(12rem,1fr)); gap:0 1rem; }
+                        box-shadow:0 0 0 3px var(--accent-soft); }
+        .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(11rem,1fr)); gap:0 1rem; }
 
-        .flash { padding:.7rem .9rem; border-radius:var(--radius); margin:0 0 1rem;
-                 font-size:.9rem; border:1px solid; }
+        .flash { padding:.65rem .85rem; border-radius:var(--radius); margin:0 0 .9rem;
+                 font-size:.88rem; border:1px solid; }
         .flash.ok    { background:var(--success-bg); border-color:#bbf7d0; color:var(--success); }
         .flash.error { background:var(--danger-bg);  border-color:var(--danger-border); color:var(--danger); }
-        .flash ul { margin:.4rem 0 0; padding-left:1.1rem; }
+        .flash ul { margin:.35rem 0 0; padding-left:1.1rem; }
 
-        .empty { padding:2.5rem 1.25rem; text-align:center; color:var(--text-muted); }
-        .empty p { margin:0 0 1rem; }
+        .empty { padding:2.25rem 1.1rem; text-align:center; color:var(--text-muted); }
+        .empty p { margin:0 0 .9rem; }
 
-        @media (max-width: 800px) {
+        @media (max-width: 860px) {
             .shell { grid-template-columns:1fr; }
             aside { border-right:0; border-bottom:1px solid var(--border); }
-            nav { flex-direction:row; overflow-x:auto; }
-            .nav-foot { display:none; }
-            main { padding:1.25rem; }
+            nav { display:flex; flex-wrap:wrap; }
+            aside .group { display:none; }
+            .topbar .brand { width:auto; }
+            .search { display:none; }
+            main { padding:1.1rem; }
         }
     </style>
 </head>
 <body>
 <div class="shell">
-    <aside>
-        <div class="brand">
-            {% if brand.logo_url %}<img src="{{ brand.logo_url }}" alt="{{ brand.name }}">{% endif %}
+    <div class="topbar">
+        <span class="brand">
+            {% if brand.logo_url %}
+                <img src="{{ brand.logo_url }}" alt="{{ brand.name }}">
+            {% else %}
+                <span class="mark">{{ brand.name|slice(0,1)|upper }}</span>
+            {% endif %}
             {{ brand.name }}
+        </span>
+
+        <div class="search">
+            {{ ui.icon('search', 15) }}
+            <input type="search" placeholder="Search domains and customers"
+                   oninput="emberFilter(this.value)" aria-label="Search">
         </div>
+
+        <div class="whoami">
+            <span class="avatar">{{ app.user.userIdentifier|slice(0,1)|upper }}</span>
+            <span><strong>{{ app.user.userIdentifier }}</strong><br>
+                  {{ 'ROLE_ADMIN' in app.user.roles ? 'Administrator' : 'User' }}</span>
+            <a class="btn ghost sm" href="/logout">Sign out</a>
+        </div>
+    </div>
+
+    <aside>
         <nav>
-            {% set nav = [
-                { route: 'dashboard', label: 'Dashboard' },
-                { route: 'domains',   label: 'Websites & Domains' },
-                { route: 'customers', label: 'Customers' },
-                { route: 'system',    label: 'System' }
-            ] %}
-            {% for item in nav %}
-                <a href="{{ path(item.route) }}"
-                   class="{{ app.request.attributes.get('_route') == item.route ? 'active' : '' }}">
-                    {{ item.label }}
-                </a>
-            {% endfor %}
+            {% set route = app.request.attributes.get('_route') %}
+            <a href="{{ path('dashboard') }}" class="{{ route == 'dashboard' ? 'active' }}">
+                {{ ui.icon('grid') }} Dashboard
+            </a>
+
+            <div class="group">Hosting</div>
+            <a href="{{ path('domains') }}" class="{{ route starts with 'domain' ? 'active' }}">
+                {{ ui.icon('globe') }} Websites &amp; Domains
+            </a>
+            <a href="{{ path('customers') }}" class="{{ route starts with 'customer' ? 'active' }}">
+                {{ ui.icon('users') }} Customers
+            </a>
+            {# Shown but disabled: the navigation states the intended shape of
+               the product without pretending these pages exist. #}
+            <a class="disabled">{{ ui.icon('database') }} Databases <span class="soon">soon</span></a>
+            <a class="disabled">{{ ui.icon('mail') }} Mail <span class="soon">soon</span></a>
+            <a class="disabled">{{ ui.icon('folder') }} Files <span class="soon">soon</span></a>
+
+            <div class="group">Server</div>
+            <a href="{{ path('system') }}" class="{{ route == 'system' ? 'active' }}">
+                {{ ui.icon('server') }} System
+            </a>
+            <a class="disabled">{{ ui.icon('chart') }} Statistics <span class="soon">soon</span></a>
+            <a class="disabled">{{ ui.icon('settings') }} Settings <span class="soon">soon</span></a>
         </nav>
-        <div class="nav-foot">
-            <strong>{{ app.user.userIdentifier }}</strong>
-            {{ 'ROLE_ADMIN' in app.user.roles ? 'Administrator' : 'User' }}
-            <div style="margin-top:.5rem"><a href="/logout">Sign out</a></div>
-        </div>
     </aside>
 
     <main>
@@ -164,5 +268,16 @@
         {% block body %}{% endblock %}
     </main>
 </div>
+
+<script>
+    // Client-side filter over anything marked data-filter. Deliberately not a
+    // server round trip: at control-panel scale the whole list is already here.
+    function emberFilter(term) {
+        const needle = term.trim().toLowerCase();
+        document.querySelectorAll('[data-filter]').forEach(el => {
+            el.style.display = !needle || el.dataset.filter.includes(needle) ? '' : 'none';
+        });
+    }
+</script>
 </body>
 </html>

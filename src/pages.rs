@@ -102,14 +102,44 @@ fn wordmark(branding: &Branding) -> String {
     }
 }
 
+/// A tab icon built from the branding, as a data URI.
+///
+/// Inline so there is no second request and no 404 on every page load, and so a
+/// white-labelled panel gets a matching icon without shipping an asset.
+fn favicon(branding: &Branding) -> String {
+    let initial = branding
+        .name
+        .chars()
+        .next()
+        .unwrap_or('E')
+        .to_uppercase()
+        .to_string();
+    let svg = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>\
+         <rect width='32' height='32' rx='7' fill='{accent}'/>\
+         <text x='16' y='22' font-family='system-ui,sans-serif' font-size='18' \
+         font-weight='700' fill='white' text-anchor='middle'>{initial}</text></svg>",
+        accent = branding.safe_accent(),
+    );
+
+    // Percent-encode only what actually breaks an attribute value.
+    svg.replace('%', "%25")
+        .replace('#', "%23")
+        .replace('<', "%3C")
+        .replace('>', "%3E")
+        .replace('"', "%22")
+}
+
 fn shell(branding: &Branding, title: &str, tagline: &str, body: &str) -> String {
     format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
+         <link rel=\"icon\" href=\"data:image/svg+xml,{favicon}\">\n\
          <title>{title}</title><style>{style}</style></head><body><main>\n\
          <div class=\"brand\">{logo}<h1>{name}</h1></div>\n\
          <p class=\"tag\">{tagline}</p>\n{body}\n</main></body></html>",
         style = style(branding),
+        favicon = favicon(branding),
         logo = wordmark(branding),
         name = escape(&branding.name),
     )
