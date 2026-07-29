@@ -82,7 +82,7 @@
                         <a class="tool" href="{{ path('domain_files', {id: domain.id}) }}">
                             {{ ui.icon('folder', 17) }} Files
                         </a>
-                        <a class="tool" href="{{ path('databases') }}">
+                        <a class="tool" href="{{ path('domain_databases', {id: domain.id}) }}">
                             {{ ui.icon('database', 17) }} Databases
                         </a>
                         <span class="tool disabled">{{ ui.icon('code', 17) }} PHP</span>

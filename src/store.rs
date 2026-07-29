@@ -111,6 +111,10 @@ fn migrate(conn: &Connection) -> Result<()> {
             name        TEXT    NOT NULL,
             db_user     TEXT    NOT NULL,
             created_at  INTEGER NOT NULL,
+            -- Optional: a database may belong to one site, or to the customer
+            -- generally. ON DELETE SET NULL so removing a domain never quietly
+            -- destroys data the customer still owns.
+            domain_id   INTEGER REFERENCES domains(id) ON DELETE SET NULL,
             UNIQUE (engine, name)
          );
 
@@ -118,6 +122,20 @@ fn migrate(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS databases_by_customer ON databases(customer_id);",
     )
     .context("could not apply the database schema")?;
+
+    // Added after the table shipped, so existing installs need it too. SQLite
+    // has no ADD COLUMN IF NOT EXISTS; asking the table what it has is the
+    // portable way.
+    let has_domain_id = conn
+        .prepare("SELECT 1 FROM pragma_table_info('databases') WHERE name = 'domain_id'")?
+        .exists([])?;
+    if !has_domain_id {
+        conn.execute_batch(
+            "ALTER TABLE databases ADD COLUMN domain_id INTEGER REFERENCES domains(id);",
+        )
+        .context("could not add domain_id to databases")?;
+    }
+
     Ok(())
 }
 
@@ -366,6 +384,11 @@ pub struct Database {
     /// The account that reaches this database, and only this one.
     pub db_user: String,
     pub created_at: u64,
+    /// The site this database serves, when it belongs to one in particular.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub customer_username: Option<String>,
     /// Filled in when listing, so the UI need not query the server itself.
@@ -381,28 +404,40 @@ fn row_to_database(row: &rusqlite::Row<'_>) -> rusqlite::Result<Database> {
         name: row.get(3)?,
         db_user: row.get(4)?,
         created_at: row.get::<_, i64>(5)? as u64,
-        customer_username: row.get(6)?,
+        domain_id: row.get(6)?,
+        domain_name: row.get(7)?,
+        customer_username: row.get(8)?,
         size_bytes: None,
     })
 }
 
-pub fn list_databases(conn: &Connection, customer_id: Option<i64>) -> Result<Vec<Database>> {
+/// List databases, optionally narrowed to a customer or a single domain.
+pub fn list_databases(
+    conn: &Connection,
+    customer_id: Option<i64>,
+    domain_id: Option<i64>,
+) -> Result<Vec<Database>> {
     let mut stmt = conn.prepare(
-        "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at, c.username
+        "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at,
+                d.domain_id, dom.name, c.username
            FROM databases d
            JOIN customers c ON c.id = d.customer_id
+           LEFT JOIN domains dom ON dom.id = d.domain_id
           WHERE (?1 IS NULL OR d.customer_id = ?1)
+            AND (?2 IS NULL OR d.domain_id = ?2)
           ORDER BY d.name",
     )?;
-    let rows = stmt.query_map(params![customer_id], row_to_database)?;
+    let rows = stmt.query_map(params![customer_id, domain_id], row_to_database)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn find_database(conn: &Connection, id: i64) -> Result<Option<Database>> {
     let mut stmt = conn.prepare(
-        "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at, c.username
+        "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at,
+                d.domain_id, dom.name, c.username
            FROM databases d
            JOIN customers c ON c.id = d.customer_id
+           LEFT JOIN domains dom ON dom.id = d.domain_id
           WHERE d.id = ?1",
     )?;
     Ok(stmt.query_row(params![id], row_to_database).optional()?)
@@ -414,13 +449,29 @@ pub fn create_database_record(
     engine: &str,
     name: &str,
     db_user: &str,
+    domain_id: Option<i64>,
 ) -> Result<Database> {
     find_customer(conn, customer_id)?.context("no such customer")?;
 
+    // A database may only be attached to a domain the same customer owns.
+    if let Some(domain_id) = domain_id {
+        let domain = find_domain(conn, domain_id)?.context("no such domain")?;
+        if domain.customer_id != customer_id {
+            bail!("{} belongs to a different customer", domain.name);
+        }
+    }
+
     conn.execute(
-        "INSERT INTO databases (customer_id, engine, name, db_user, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![customer_id, engine, name, db_user, now_secs() as i64],
+        "INSERT INTO databases (customer_id, engine, name, db_user, created_at, domain_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            customer_id,
+            engine,
+            name,
+            db_user,
+            now_secs() as i64,
+            domain_id
+        ],
     )?;
 
     find_database(conn, conn.last_insert_rowid())?

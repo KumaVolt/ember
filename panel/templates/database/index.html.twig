@@ -43,13 +43,19 @@
             </div>
         {% else %}
             <table>
-                <tr><th>Database</th><th>Owner</th><th>User</th><th>Engine</th><th>Size</th><th></th></tr>
+                <tr><th>Database</th><th>Owner</th><th>Site</th><th>User</th><th>Size</th><th></th></tr>
                 {% for database in databases %}
                     <tr data-filter="{{ (database.name ~ ' ' ~ database.customer_username)|lower }}">
                         <td><strong class="mono">{{ database.name }}</strong></td>
                         <td><a href="{{ path('customer_show', {id: database.customer_id}) }}">{{ database.customer_username }}</a></td>
+                        <td>
+                            {% if database.domain_id is defined and database.domain_name %}
+                                <a href="{{ path('domain_databases', {id: database.domain_id}) }}">{{ database.domain_name }}</a>
+                            {% else %}
+                                <span style="color:var(--text-muted)">—</span>
+                            {% endif %}
+                        </td>
                         <td class="mono">{{ database.db_user }}</td>
-                        <td><span class="badge muted">{{ database.engine }}</span></td>
                         <td class="mono">
                             {{ database.size_bytes is not null
                                 ? (database.size_bytes < 1024 ? database.size_bytes ~ ' B'

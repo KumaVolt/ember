@@ -1,6 +1,23 @@
 {% extends 'base.html.twig' %}
 {% import '_icons.html.twig' as ui %}
-{% block title %}{{ brand.name }} — {{ customer.display_name ?: customer.username }}{% endblock %}
+{% block title %}{{ brand.name }} — {{ customer.display_name ?: customer.username }}    <div class="card">
+        <h2>Databases</h2>
+        {% if databases is empty %}
+            <div class="empty"><p>No databases for this customer.</p></div>
+        {% else %}
+            <table>
+                <tr><th>Database</th><th>User</th><th>Site</th></tr>
+                {% for database in databases %}
+                    <tr>
+                        <td class="mono"><strong>{{ database.name }}</strong></td>
+                        <td class="mono">{{ database.db_user }}</td>
+                        <td>{{ database.domain_name|default('—') }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+{% endblock %}
 
 {% block body %}
     <header class="page">
@@ -51,6 +68,23 @@
                             <a class="btn ghost sm" href="{{ path('domain_files', {id: domain.id}) }}">Files</a>
                             <a class="btn ghost sm" href="{{ path('domains') }}">Manage</a>
                         </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+    <div class="card">
+        <h2>Databases</h2>
+        {% if databases is empty %}
+            <div class="empty"><p>No databases for this customer.</p></div>
+        {% else %}
+            <table>
+                <tr><th>Database</th><th>User</th><th>Site</th></tr>
+                {% for database in databases %}
+                    <tr>
+                        <td class="mono"><strong>{{ database.name }}</strong></td>
+                        <td class="mono">{{ database.db_user }}</td>
+                        <td>{{ database.domain_name|default('—') }}</td>
                     </tr>
                 {% endfor %}
             </table>

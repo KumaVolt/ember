@@ -1,0 +1,107 @@
+{% extends 'base.html.twig' %}
+{% import '_icons.html.twig' as ui %}
+{% block title %}{{ brand.name }} — Databases: {{ domain.name }}{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Databases</h1>
+            <p><strong>{{ domain.name }}</strong> ·
+               owned by <a href="{{ path('customer_show', {id: domain.customer_id}) }}">{{ domain.customer_username }}</a></p>
+        </div>
+        <a class="btn ghost" href="{{ path('domains') }}">Back to domains</a>
+    </header>
+
+    {% if not server.available %}
+        <div class="card" style="border-color:var(--warn)">
+            <h2 style="color:var(--warn)">No database server</h2>
+            <div class="body">
+                <p style="margin:0 0 .6rem">{{ server.status }}</p>
+                <p style="margin:0;color:var(--text-muted);font-size:.88rem">
+                    Install it from <a href="{{ path('settings_services') }}">Settings → Services</a>,
+                    then come back.
+                </p>
+            </div>
+        </div>
+    {% endif %}
+
+    <div class="card">
+        <h2>For this site</h2>
+        {% if databases is empty %}
+            <div class="empty"><p>No databases attached to {{ domain.name }} yet.</p></div>
+        {% else %}
+            <table>
+                <tr><th>Database</th><th>User</th><th>Host</th><th>Size</th><th></th></tr>
+                {% for database in databases %}
+                    <tr>
+                        <td><strong class="mono">{{ database.name }}</strong></td>
+                        <td class="mono">{{ database.db_user }}</td>
+                        <td class="mono">127.0.0.1</td>
+                        <td class="mono">
+                            {{ database.size_bytes is not null
+                                ? (database.size_bytes < 1024 ? database.size_bytes ~ ' B'
+                                   : (database.size_bytes // 1024) ~ ' KB') : '—' }}
+                        </td>
+                        <td style="text-align:right;white-space:nowrap">
+                            <form method="post" style="display:inline"
+                                  action="{{ path('database_password', {id: database.id}) }}"
+                                  onsubmit="return confirm('Reset the password for {{ database.db_user }}? Anything using the old one stops connecting.')">
+                                <button class="btn ghost sm" type="submit">Reset password</button>
+                            </form>
+                            <a class="btn danger sm" href="{{ path('database_delete_confirm', {id: database.id}) }}">Drop</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+
+    {% if server.available %}
+        <div class="card">
+            <h2>Add a database for {{ domain.name }}</h2>
+            <div class="body">
+                <form method="post" action="{{ path('domain_database_create', {id: domain.id}) }}"
+                      style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap">
+                    <div style="flex:1;min-width:14rem">
+                        <label for="name">Database name</label>
+                        <input id="name" name="name" placeholder="wordpress" autocapitalize="none"
+                               spellcheck="false" required style="margin:0">
+                    </div>
+                    <div style="min-width:9rem">
+                        <label for="engine">Engine</label>
+                        <select id="engine" name="engine" style="margin:0">
+                            <option value="mariadb">MariaDB</option>
+                            <option value="postgres" disabled>PostgreSQL — not yet</option>
+                            <option value="redis" disabled>Redis — not yet</option>
+                        </select>
+                    </div>
+                    <button class="btn" type="submit">{{ ui.icon('plus', 15) }} Create</button>
+                </form>
+                <p style="color:var(--text-muted);font-size:.8rem;margin:.9rem 0 0">
+                    Named <code class="mono">{{ domain.customer_username }}_&lt;name&gt;</code>, owned by
+                    {{ domain.customer_username }}. The password is shown once and not stored.
+                </p>
+            </div>
+        </div>
+    {% endif %}
+
+    {% if others is not empty %}
+        <div class="card">
+            <h2>{{ domain.customer_username }}'s other databases</h2>
+            <div class="body" style="padding-bottom:.4rem;color:var(--text-muted);font-size:.88rem">
+                Not attached to this site, but the same customer owns them, so this site can
+                still use them.
+            </div>
+            <table>
+                <tr><th>Database</th><th>User</th><th>Attached to</th></tr>
+                {% for database in others %}
+                    <tr>
+                        <td class="mono">{{ database.name }}</td>
+                        <td class="mono">{{ database.db_user }}</td>
+                        <td>{{ database.domain_name|default('—') }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+        </div>
+    {% endif %}
+{% endblock %}

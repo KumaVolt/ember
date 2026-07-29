@@ -32,6 +32,70 @@ final class DatabaseController extends AbstractController
         ]);
     }
 
+    /**
+     * Databases for one domain.
+     *
+     * A database may belong to a specific site or to the customer generally,
+     * so this shows both: the ones attached to this domain, and the owner's
+     * others, which that site can still legitimately use.
+     */
+    #[Route('/domains/{id}/databases', name: 'domain_databases', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function forDomain(int $id): Response
+    {
+        $domain = $this->api->get('/api/v1/domains/'.$id);
+        if (null === $domain || isset($domain['error'])) {
+            $this->addFlash('error', 'That domain no longer exists.');
+
+            return $this->redirectToRoute('domains');
+        }
+
+        $all = $this->api->get('/api/v1/databases?customer_id='.$domain['customer_id']) ?? [];
+        $owned = [];
+        $others = [];
+        foreach ($all['databases'] ?? [] as $database) {
+            if (($database['domain_id'] ?? null) === $id) {
+                $owned[] = $database;
+            } else {
+                $others[] = $database;
+            }
+        }
+
+        return $this->render('database/domain.html.twig', [
+            'domain' => $domain,
+            'databases' => $owned,
+            'others' => $others,
+            'server' => $all['server'] ?? ['available' => false, 'status' => 'unknown'],
+        ]);
+    }
+
+    #[Route('/domains/{id}/databases/new', name: 'domain_database_create', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function createForDomain(int $id, Request $request): Response
+    {
+        // Only the domain is named; Ember resolves the owner from it.
+        $result = $this->api->post('/api/v1/databases', [
+            'domain_id' => $id,
+            'name' => trim((string) $request->request->get('name')),
+            'engine' => (string) $request->request->get('engine', 'mariadb'),
+        ]);
+
+        if (null === $result || isset($result['error'])) {
+            $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
+        } else {
+            $this->addFlash('ok', sprintf(
+                'Database <strong>%s</strong> created.<ul>'
+                .'<li>User: <code>%s</code></li>'
+                .'<li>Password: <code>%s</code></li>'
+                .'<li>Host: <code>127.0.0.1</code> or <code>localhost</code></li>'
+                .'</ul>Copy the password now — it is not stored and cannot be shown again.',
+                htmlspecialchars($result['database']['name']),
+                htmlspecialchars($result['database']['db_user']),
+                htmlspecialchars($result['password']),
+            ));
+        }
+
+        return $this->redirectToRoute('domain_databases', ['id' => $id]);
+    }
+
     #[Route('/databases/new', name: 'database_new', methods: ['GET'])]
     public function new(): Response
     {
@@ -62,7 +126,7 @@ final class DatabaseController extends AbstractController
             'Database <strong>%s</strong> created.<ul>'
             .'<li>User: <code>%s</code></li>'
             .'<li>Password: <code>%s</code></li>'
-            .'<li>Host: <code>localhost</code></li>'
+            .'<li>Host: <code>127.0.0.1</code> or <code>localhost</code></li>'
             .'</ul>Copy the password now — it is not stored and cannot be shown again.',
             htmlspecialchars($result['database']['name']),
             htmlspecialchars($result['database']['db_user']),

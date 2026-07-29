@@ -35,6 +35,7 @@ final class CustomerController extends AbstractController
         return $this->render('customer/show.html.twig', [
             'customer' => $customer,
             'domains' => ($this->api->get('/api/v1/domains?customer_id='.$id)['domains'] ?? []),
+            'databases' => ($this->api->get('/api/v1/databases?customer_id='.$id)['databases'] ?? []),
         ]);
     }
 

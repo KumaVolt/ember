@@ -1291,8 +1291,17 @@ async fn resource_api(
                 .find(|(k, _)| *k == "customer_id")
                 .and_then(|(_, v)| v.parse::<i64>().ok());
 
+            let domain_id = request
+                .uri()
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "domain_id")
+                .and_then(|(_, v)| v.parse::<i64>().ok());
+
             let conn = store::open()?;
-            let mut records = store::list_databases(&conn, customer_id)?;
+            let mut records = store::list_databases(&conn, customer_id, domain_id)?;
 
             // Sizes come from the server, not the record, so they cannot go
             // stale. Skipped entirely when the server is down.
@@ -1322,14 +1331,25 @@ async fn resource_api(
             let Some(raw_name) = field(&body, "name") else {
                 return Ok(Some(api_error(StatusCode::BAD_REQUEST, "name is required")));
             };
-            let Some(customer_id) = body.get("customer_id").and_then(|v| v.as_i64()) else {
-                return Ok(Some(api_error(
-                    StatusCode::BAD_REQUEST,
-                    "customer_id is required",
-                )));
+            let domain_id = body.get("domain_id").and_then(|v| v.as_i64());
+            let conn = store::open()?;
+
+            // Creating from a domain page need only name the domain; the owner
+            // follows from it.
+            let customer_id = match body.get("customer_id").and_then(|v| v.as_i64()) {
+                Some(id) => id,
+                None => match domain_id.and_then(|id| store::find_domain(&conn, id).ok().flatten())
+                {
+                    Some(domain) => domain.customer_id,
+                    None => {
+                        return Ok(Some(api_error(
+                            StatusCode::BAD_REQUEST,
+                            "customer_id or domain_id is required",
+                        )));
+                    }
+                },
             };
 
-            let conn = store::open()?;
             let Some(customer) = store::find_customer(&conn, customer_id)? else {
                 return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such customer")));
             };
@@ -1372,6 +1392,7 @@ async fn resource_api(
                 engine.as_str(),
                 &name,
                 &user,
+                domain_id,
             ) {
                 Ok(record) => record,
                 Err(err) => {

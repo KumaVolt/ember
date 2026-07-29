@@ -531,6 +531,12 @@ actually reach, rather than the panel asserting it.
 Names are prefixed with the owner, so `wordpress` becomes `acme_wordpress` and
 two customers can both use the name they want.
 
+A database can be **attached to a domain** or belong to the customer generally.
+The Databases tool on a domain row opens that site's databases and creates new
+ones in place, needing only a name — the owner follows from the domain. Removing
+a domain leaves its databases with the customer rather than quietly destroying
+data they still own.
+
 Passwords are generated, shown **once**, and never stored — there is no way to
 display one again, only to reset it. Dropping a database destroys data with no
 undo, so it requires typing the database name, enforced in the API.
