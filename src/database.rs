@@ -230,6 +230,18 @@ pub fn qualified_name(owner: &str, name: &str) -> String {
 // Operations
 // ---------------------------------------------------------------------------
 
+/// The hosts a customer's user is granted from.
+///
+/// `localhost` alone is not enough: with `skip-name-resolve` set — which Ember
+/// sets, to keep the server off DNS — MariaDB matches a TCP connection from
+/// 127.0.0.1 against the literal address rather than resolving it to
+/// `localhost`. An application configured with `DB_HOST=127.0.0.1`, which is
+/// most of them, would be refused with error 1130.
+///
+/// All three are loopback, so this widens how a customer may connect without
+/// widening where from.
+const GRANT_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
 /// Create a database and a user that can reach it and nothing else.
 pub fn create(
     cfg: &Config,
@@ -249,14 +261,17 @@ pub fn create(
         bail!("a database named {database} already exists on this server");
     }
 
-    // The grant names one database. That single line is what stops this user
-    // seeing anything else on the server, including other customers'.
-    let sql = format!(
-        "CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n\
-         CREATE USER IF NOT EXISTS '{user}'@'localhost' IDENTIFIED BY '{password}';\n\
-         GRANT ALL PRIVILEGES ON `{database}`.* TO '{user}'@'localhost';\n\
-         FLUSH PRIVILEGES;\n"
-    );
+    // Each grant names one database. That is what stops this user seeing
+    // anything else on the server, including other customers'.
+    let mut sql =
+        format!("CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n");
+    for host in GRANT_HOSTS {
+        sql.push_str(&format!(
+            "CREATE USER IF NOT EXISTS '{user}'@'{host}' IDENTIFIED BY '{password}';\n\
+             GRANT ALL PRIVILEGES ON `{database}`.* TO '{user}'@'{host}';\n"
+        ));
+    }
+    sql.push_str("FLUSH PRIVILEGES;\n");
 
     run_sql(&sql).with_context(|| format!("could not create {database}"))?;
     Ok(())
@@ -270,11 +285,11 @@ pub fn drop(cfg: &Config, engine: Engine, database: &str, user: &str) -> Result<
     check_identifier(database, "database name", MAX_DB_NAME)?;
     check_identifier(user, "database user", MAX_DB_USER)?;
 
-    let sql = format!(
-        "DROP DATABASE IF EXISTS `{database}`;\n\
-         DROP USER IF EXISTS '{user}'@'localhost';\n\
-         FLUSH PRIVILEGES;\n"
-    );
+    let mut sql = format!("DROP DATABASE IF EXISTS `{database}`;\n");
+    for host in GRANT_HOSTS {
+        sql.push_str(&format!("DROP USER IF EXISTS '{user}'@'{host}';\n"));
+    }
+    sql.push_str("FLUSH PRIVILEGES;\n");
 
     run_sql(&sql).with_context(|| format!("could not drop {database}"))?;
     Ok(())
@@ -287,10 +302,17 @@ pub fn set_password(cfg: &Config, engine: Engine, user: &str, password: &str) ->
     check_identifier(user, "database user", MAX_DB_USER)?;
     check_password(password)?;
 
-    run_sql(&format!(
-        "ALTER USER '{user}'@'localhost' IDENTIFIED BY '{password}';\nFLUSH PRIVILEGES;\n"
-    ))
-    .with_context(|| format!("could not change the password for {user}"))?;
+    // Every host the user was granted from, or the password would change for
+    // socket connections and not for TCP ones.
+    let mut sql = String::new();
+    for host in GRANT_HOSTS {
+        sql.push_str(&format!(
+            "ALTER USER IF EXISTS '{user}'@'{host}' IDENTIFIED BY '{password}';\n"
+        ));
+    }
+    sql.push_str("FLUSH PRIVILEGES;\n");
+
+    run_sql(&sql).with_context(|| format!("could not change the password for {user}"))?;
     Ok(())
 }
 
@@ -317,8 +339,16 @@ pub fn size_bytes(database: &str) -> Option<u64> {
 /// the server rather than asserted.
 pub fn grants_for(user: &str) -> Result<Vec<String>> {
     check_identifier(user, "database user", MAX_DB_USER)?;
-    let output = run_sql(&format!("SHOW GRANTS FOR '{user}'@'localhost';"))?;
-    Ok(output.lines().map(|l| l.trim().to_string()).collect())
+
+    let mut grants = Vec::new();
+    for host in GRANT_HOSTS {
+        // A host may legitimately have no user — an older record, or a server
+        // where one grant failed — so a miss is skipped rather than fatal.
+        if let Ok(output) = run_sql(&format!("SHOW GRANTS FOR '{user}'@'{host}';")) {
+            grants.extend(output.lines().map(|l| l.trim().to_string()));
+        }
+    }
+    Ok(grants)
 }
 
 /// Where the server itself lives, as opposed to the client.

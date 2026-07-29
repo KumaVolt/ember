@@ -148,13 +148,39 @@ fn is_installed(definition: &Definition) -> bool {
         .any(|path| std::path::Path::new(path).exists())
 }
 
-fn is_running(unit: Option<&str>) -> bool {
-    let Some(unit) = unit else { return false };
-    std::process::Command::new("systemctl")
-        .args(["is-active", "--quiet", unit])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+/// Is the component actually running?
+///
+/// systemd is asked first where it exists, but it is not the only way a service
+/// runs — in a container ember starts the database itself, and reporting
+/// "stopped" for a server that is happily serving is worse than not reporting
+/// at all. So a process check backs it up.
+fn is_running(definition: &Definition) -> bool {
+    if let Some(unit) = definition.unit
+        && std::path::Path::new("/run/systemd/system").is_dir()
+        && std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", unit])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // Fall back to looking for the process itself, by the binary's own name.
+    definition.binaries.iter().any(|path| {
+        let Some(name) = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+        else {
+            return false;
+        };
+        std::process::Command::new("pgrep")
+            .args(["-x", name])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
 }
 
 fn version_of(definition: &Definition) -> Option<String> {
@@ -198,7 +224,7 @@ pub fn list() -> Vec<Service> {
                 category: definition.category.to_string(),
                 description: definition.description.to_string(),
                 installed,
-                running: installed && is_running(definition.unit),
+                running: installed && is_running(definition),
                 version: if installed {
                     version_of(definition)
                 } else {
