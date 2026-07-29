@@ -415,6 +415,46 @@ vhosts are for customer domains only.
 Mutations require an administrator. Reads work for any signed-in account, so the
 panel renders without elevated rights.
 
+## TLS certificates
+
+Certificates come from Let's Encrypt via **certbot**, driven by Ember. Issuance
+has a lot of hard-won edge cases — rate limits, account recovery, revocation, CA
+policy changes — and certbot has absorbed all of them, so Ember configures it
+rather than reimplementing ACME.
+
+```console
+$ ember cert issue example.com --email ops@example.com
+$ ember cert list
+$ ember cert renew [--force]
+```
+
+Or from the panel: **Enable SSL** on the domain row. The panel runs nothing
+itself — it calls `POST /api/v1/domains/{id}/certificate`, and Ember does the
+privileged work. PHP never touches certbot or `/etc/letsencrypt`.
+
+Validation is HTTP-01 over the domain's own webroot, so nothing stops and no
+port is taken over. Two details matter and are easy to get wrong:
+
+- **The challenge path is exempted in the vhost.** The generated config denies
+  dotfiles, which would 403 `/.well-known/acme-challenge/` and break issuance —
+  and, worse, break *renewal* silently once TLS is on. Nginx matches it with
+  `location ^~` so it wins against the dotfile rule; apache aliases it and the
+  HTTPS redirect explicitly skips it.
+- **Renewal reloads the web server.** Certbot rewrites the files on its own
+  timer, but a running server holds the old certificate open until told to
+  reload. `install.sh` writes `/etc/letsencrypt/renewal-hooks/deploy/ember-reload`
+  so a renewed certificate is actually served.
+
+Once a certificate exists the vhost is regenerated: port 80 becomes a redirect
+(except the challenge path), and the site moves to 443 with TLS 1.2+.
+
+`ember cert list` reports whether renewal is actually scheduled — via
+`certbot.timer` or the cron entry. A certificate that quietly stops renewing is
+invisible until the day it expires, so it is stated rather than assumed.
+
+Use `--staging` while DNS is still settling: untrusted certificates, far looser
+rate limits.
+
 ## The panel
 
 `panel/` in this repository is a Symfony 8.1 application. Its source is version
@@ -450,8 +490,12 @@ Ember serves whatever `public/index.php` it finds and needs no Rust changes.
   that exists yet.
 - **CSRF on the login form.** Mitigated by `SameSite=Lax` today, but a real
   token is the correct fix.
-- **TLS.** Session cookies are `HttpOnly` + `SameSite=Lax` but not yet `Secure`,
-  because there is no HTTPS listener yet.
+- **TLS for the panel itself.** Customer domains can get certificates, but the
+  panel still serves plain HTTP on its own port, so its session cookie is
+  `HttpOnly` + `SameSite=Lax` and not yet `Secure`.
+- **Successful issuance is untested.** The path to certbot is verified end to
+  end — including a real rejection from Let's Encrypt staging — but obtaining an
+  actual certificate needs a public domain pointing at the server.
 - **Per-site pools.** The machinery is shaped for them; only the panel pool
   exists today.
 - **No published release yet.** `https://get.ember.sh` does not exist; the

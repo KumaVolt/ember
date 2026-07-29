@@ -86,15 +86,19 @@ step "Installing dependencies"
 # engine download. Both are usually present, so only install what is missing.
 NEEDED=""
 [ -f /etc/pam.d/other ] || NEEDED="$NEEDED libpam-runtime"
+# certbot obtains and renews TLS certificates. Installing it here means its
+# own renewal timer is in place from day one, rather than being something an
+# operator has to remember before the first certificate expires.
 case "$PKG" in
   apt)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     # shellcheck disable=SC2086
-    apt-get install -y -qq --no-install-recommends ca-certificates libpam0g $NEEDED >/dev/null
+    apt-get install -y -qq --no-install-recommends \
+      ca-certificates libpam0g openssl certbot $NEEDED >/dev/null
     ;;
   dnf|yum)
-    $PKG install -y -q ca-certificates pam >/dev/null
+    $PKG install -y -q ca-certificates pam openssl certbot >/dev/null
     ;;
   none)
     say "unknown package manager — assuming libpam and CA certificates are present"
@@ -292,6 +296,42 @@ if id ember-esw >/dev/null 2>&1; then
   chown -R ember-esw:ember-esw "$PANEL_DIR/var" 2>/dev/null || true
 fi
 chmod -R u+rwX,g+rwX "$PANEL_DIR/var" 2>/dev/null || true
+
+# --- certificate renewal ----------------------------------------------------
+
+step "Setting up certificate renewal"
+
+if command -v certbot >/dev/null 2>&1; then
+  # Renewing rewrites the files, but a running web server keeps serving the old
+  # certificate until told to reload. Without this hook, renewal succeeds and
+  # visitors still see the expiring certificate.
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  cat > /etc/letsencrypt/renewal-hooks/deploy/ember-reload <<'HOOKEOF'
+#!/bin/sh
+# Installed by ember. Reloads the web servers so a renewed certificate is
+# actually served; without this the old one stays live until a restart.
+set -eu
+for unit in nginx apache2 httpd; do
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$unit"; then
+    systemctl reload "$unit" || true
+  fi
+done
+HOOKEOF
+  chmod 755 /etc/letsencrypt/renewal-hooks/deploy/ember-reload
+  say "installed the renewal reload hook"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl enable --now certbot.timer >/dev/null 2>&1; then
+      say "certbot.timer enabled; renewal runs automatically"
+    else
+      say "could not enable certbot.timer; check renewal with: ember cert list"
+    fi
+  else
+    say "no systemd — the certbot package's cron entry handles renewal"
+  fi
+else
+  say "certbot not available; TLS can be added later with: ember cert issue <domain>"
+fi
 
 # --- service ----------------------------------------------------------------
 

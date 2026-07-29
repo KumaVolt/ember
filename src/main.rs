@@ -9,6 +9,7 @@
 
 mod accounts;
 mod auth;
+mod cert;
 mod config;
 mod daemon;
 mod esw;
@@ -78,6 +79,9 @@ enum Command {
     /// Inspect and manage the system accounts that can log into the panel
     #[command(subcommand)]
     Users(UserCommand),
+    /// Manage TLS certificates from Let's Encrypt
+    #[command(subcommand)]
+    Cert(CertCommand),
     /// Reset panel access when you are locked out
     Recover {
         /// Account to restore; defaults to the existing administrator
@@ -116,6 +120,29 @@ enum UserCommand {
         /// Login shell for the new account
         #[arg(long, default_value = "/bin/bash")]
         shell: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CertCommand {
+    /// Request a certificate for a domain
+    Issue {
+        /// The domain, as registered in the panel
+        domain: String,
+        /// Contact address for expiry notices
+        #[arg(short, long)]
+        email: Option<String>,
+        /// Use Let's Encrypt staging: untrusted certificates, loose rate limits
+        #[arg(long)]
+        staging: bool,
+    },
+    /// Show certificate status for every domain
+    List,
+    /// Renew whatever is due
+    Renew {
+        /// Renew even if not yet due
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -267,6 +294,8 @@ fn main() -> Result<()> {
             Ok(())
         }
 
+        Command::Cert(command) => certificates(command),
+
         Command::Recover { user } => recover(user.as_deref()),
 
         Command::Logs { lines } => {
@@ -324,6 +353,81 @@ fn print_status(json: bool) {
             } else {
                 println!("service:  stopped");
             }
+        }
+    }
+}
+
+/// TLS certificates, driven through certbot.
+fn certificates(command: CertCommand) -> Result<()> {
+    let cfg = Config::resolve(None, None)?;
+    let conn = store::open()?;
+
+    match command {
+        CertCommand::Issue {
+            domain,
+            email,
+            staging,
+        } => {
+            let record = store::list_domains(&conn, None)?
+                .into_iter()
+                .find(|d| d.name == domain)
+                .ok_or_else(|| anyhow::anyhow!("{domain:?} is not a domain in this panel"))?;
+
+            if staging {
+                println!("using Let's Encrypt staging — the certificate will not be trusted");
+            }
+            println!("requesting a certificate for {domain} and www.{domain}");
+            let output = cert::issue(&cfg, &record, email.as_deref(), staging)?;
+            println!("{output}");
+
+            // Only now does the vhost gain its TLS block.
+            let path = vhost::write_config(&cfg, &record)?;
+            println!("  vhost rewritten: {}", path.display());
+            if let Ok(server) = vhost::WebServer::parse(&record.webserver) {
+                println!("  {}", vhost::reload(server)?);
+            }
+            let hook = cert::install_renewal_hook(&cfg)?;
+            println!("  renewal hook: {}", hook.display());
+            Ok(())
+        }
+
+        CertCommand::List => {
+            let domains = store::list_domains(&conn, None)?;
+            if domains.is_empty() {
+                println!("no domains yet");
+                return Ok(());
+            }
+
+            println!("{:<32} {:<10} {:<26} DAYS", "DOMAIN", "TLS", "EXPIRES");
+            for domain in domains {
+                let status = cert::status(&domain.name);
+                println!(
+                    "{:<32} {:<10} {:<26} {}",
+                    domain.name,
+                    if status.present { "yes" } else { "—" },
+                    status.expires_at.unwrap_or_else(|| "—".into()),
+                    status
+                        .days_remaining
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                );
+            }
+
+            // The failure that matters is silent: renewal stops and nobody
+            // notices until the certificate expires.
+            match cert::renewal_timer_active() {
+                Some(source) => println!("\nautomatic renewal: active via {source}"),
+                None => println!(
+                    "\nautomatic renewal: NOT scheduled — certificates will expire.\n\
+                     enable it with: systemctl enable --now certbot.timer"
+                ),
+            }
+            Ok(())
+        }
+
+        CertCommand::Renew { force } => {
+            println!("{}", cert::renew_all(&cfg, force)?);
+            Ok(())
         }
     }
 }

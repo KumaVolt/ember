@@ -19,7 +19,7 @@ use fastcgi_client::{Client, Params, Request as FcgiRequest};
 
 use crate::{
     accounts::{self, Source},
-    auth,
+    auth, cert,
     config::{self, Config},
     daemon::{self, State as ServiceState},
     esw::{self, EswProcess, PoolAddr},
@@ -743,7 +743,8 @@ async fn control_api(inner: &Inner, request: Request, path: &str, user: &str) ->
             "endpoints": [
                 "/api/v1/status", "/api/v1/whoami", "/api/v1/users",
                 "/api/v1/summary", "/api/v1/customers", "/api/v1/domains",
-                "/api/v1/branding",
+                "/api/v1/branding", "/api/v1/domains/{id}/certificate",
+                "/api/v1/certificates/renew",
             ],
         }),
         "/api/v1/status" => serde_json::json!({
@@ -1024,6 +1025,126 @@ async fn resource_api(
                 StatusCode::CREATED,
                 serde_json::json!({ "domain": domain, "notes": warnings }),
             )
+        }
+
+        // --- certificates --------------------------------------------------
+        (&Method::GET, r) if r.starts_with("/api/v1/domains/") && r.ends_with("/certificate") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/domains/")
+                .trim_end_matches("/certificate")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+            let conn = store::open()?;
+            match store::find_domain(&conn, id)? {
+                Some(domain) => api_json(
+                    StatusCode::OK,
+                    serde_json::json!({
+                        "certificate": cert::status(&domain.name),
+                        "certbot_installed": cert::certbot_available(),
+                        "auto_renewal": cert::renewal_timer_active(),
+                    }),
+                ),
+                None => api_error(StatusCode::NOT_FOUND, "no such domain"),
+            }
+        }
+
+        (&Method::POST, r) if r.starts_with("/api/v1/domains/") && r.ends_with("/certificate") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/domains/")
+                .trim_end_matches("/certificate")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+            let body = json_body(request).await?;
+            let staging = body
+                .get("staging")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let conn = store::open()?;
+            let Some(domain) = store::find_domain(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain")));
+            };
+
+            // Prefer the customer's address so expiry notices reach whoever
+            // owns the site rather than the operator.
+            let email = field(&body, "email").map(str::to_string).or_else(|| {
+                store::find_customer(&conn, domain.customer_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.email)
+            });
+
+            match cert::issue(&cfg, &domain, email.as_deref(), staging) {
+                Ok(output) => {
+                    // The vhost has to be rewritten: it only gains its TLS
+                    // block once the certificate is actually on disk.
+                    let mut notes = vec![];
+                    match vhost::write_config(&cfg, &domain) {
+                        Ok(path) => notes.push(format!("vhost rewritten: {}", path.display())),
+                        Err(err) => notes.push(format!("vhost not rewritten: {err}")),
+                    }
+                    if let Ok(server) = vhost::WebServer::parse(&domain.webserver) {
+                        notes.push(vhost::reload(server)?);
+                    }
+                    match cert::install_renewal_hook(&cfg) {
+                        Ok(path) => notes.push(format!("renewal hook: {}", path.display())),
+                        Err(err) => notes.push(format!("renewal hook not installed: {err}")),
+                    }
+                    esw::log_line(&format!(
+                        "[{}] {actor} issued a certificate for {}",
+                        daemon::now_secs(),
+                        domain.name
+                    ));
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "certificate": cert::status(&domain.name),
+                            "notes": notes,
+                            "certbot": output.lines().rev().take(6).collect::<Vec<_>>(),
+                        }),
+                    )
+                }
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
+        }
+
+        (&Method::DELETE, r)
+            if r.starts_with("/api/v1/domains/") && r.ends_with("/certificate") =>
+        {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/domains/")
+                .trim_end_matches("/certificate")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+            let conn = store::open()?;
+            let Some(domain) = store::find_domain(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain")));
+            };
+            let output = cert::remove(&cfg, &domain.name)?;
+            // Back to plain HTTP, or nginx would reference files that are gone.
+            let _ = vhost::write_config(&cfg, &domain);
+            if let Ok(server) = vhost::WebServer::parse(&domain.webserver) {
+                let _ = vhost::reload(server);
+            }
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({ "removed": domain.name, "certbot": output }),
+            )
+        }
+
+        (&Method::POST, "/api/v1/certificates/renew") => {
+            let body = json_body(request).await?;
+            let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            match cert::renew_all(&cfg, force) {
+                Ok(output) => api_json(
+                    StatusCode::OK,
+                    serde_json::json!({ "output": output.lines().collect::<Vec<_>>() }),
+                ),
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
         }
 
         (&Method::DELETE, r) if path_id(r, "/api/v1/domains").is_some() => {
