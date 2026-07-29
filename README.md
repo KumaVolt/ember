@@ -643,8 +643,14 @@ actually reach, rather than the panel asserting it.
 Names are prefixed with the owner, so `wordpress` becomes `acme_wordpress` and
 two customers can both use the name they want.
 
-Adding a domain offers to create a database for it in the same step, named from
-the domain unless you say otherwise. It is an option rather than automatic — a
+Adding a domain defaults to the signed-in account's own customer, and can create
+a **new customer inline** — most domains added this way belong either to you or
+to someone who does not exist in the panel yet, and neither should mean visiting
+another page first. Setup registers the administrator as a customer too, so
+there is always an owner to hang a site on.
+
+Adding a domain also offers to create a database for it in the same step, named
+from the domain unless you say otherwise. It is an option rather than automatic — a
 static site does not need one — and opting out creates nothing. A failure there
 is reported separately, because the domain exists either way and should not look
 as though it failed too.

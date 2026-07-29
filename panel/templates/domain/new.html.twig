@@ -14,12 +14,6 @@
 
     <div class="card" style="max-width:38rem">
         <div class="body">
-            {% if customers is empty %}
-                <p style="margin:0;color:var(--text-muted)">
-                    Add a <a href="{{ path('customer_new') }}">customer</a> first — every domain
-                    belongs to one, and its files are owned by that customer's system account.
-                </p>
-            {% else %}
                 <form method="post" action="{{ path('domain_create') }}">
                     <label for="name">Domain name</label>
                     <input id="name" name="name" placeholder="example.com" value="{{ app.request.get('name') }}"
@@ -28,12 +22,21 @@
                     <div class="row">
                         <div>
                             <label for="customer_id">Customer</label>
-                            <select id="customer_id" name="customer_id" required>
+                            <select id="customer_id" name="customer_id" required
+                                    onchange="document.getElementById('new-customer').hidden = this.value !== '__new__';
+                                              document.getElementById('new_customer_username').required = this.value === '__new__';">
+                                {# The signed-in account's own customer comes first and is
+                                   selected: most domains added here are their own. #}
                                 {% for customer in customers %}
-                                    <option value="{{ customer.id }}">
+                                    <option value="{{ customer.id }}"
+                                            {{ customer.username == app.user.userIdentifier ? 'selected' }}>
                                         {{ customer.display_name ?: customer.username }} ({{ customer.username }})
+                                        {{ customer.username == app.user.userIdentifier ? ' — you' }}
                                     </option>
                                 {% endfor %}
+                                <option value="__new__" {{ customers is empty ? 'selected' }}>
+                                    + New customer…
+                                </option>
                             </select>
                         </div>
                         <div>
@@ -43,6 +46,38 @@
                                 <option value="apache">apache</option>
                             </select>
                         </div>
+                    </div>
+
+                    {# Revealed by the select above, and shown from the start when
+                       there is no customer to pick. #}
+                    <div id="new-customer" {{ customers is empty ? '' : 'hidden' }}
+                         style="border:1px solid var(--border);border-radius:var(--radius);
+                                padding:1rem;margin:0 0 1rem;background:var(--surface-sunken)">
+                        <div style="font-weight:600;font-size:.88rem;margin-bottom:.6rem">
+                            New customer
+                        </div>
+                        <div class="row">
+                            <div>
+                                <label for="new_customer_username">Username</label>
+                                <input id="new_customer_username" name="new_customer_username"
+                                       placeholder="acme" autocapitalize="none" spellcheck="false"
+                                       {{ customers is empty ? 'required' }}>
+                            </div>
+                            <div>
+                                <label for="new_customer_display_name">Display name</label>
+                                <input id="new_customer_display_name" name="new_customer_display_name"
+                                       placeholder="Acme Ltd">
+                            </div>
+                            <div>
+                                <label for="new_customer_email">Email</label>
+                                <input id="new_customer_email" name="new_customer_email"
+                                       type="email" placeholder="ops@acme.com">
+                            </div>
+                        </div>
+                        <p style="color:var(--text-muted);font-size:.76rem;margin:-.5rem 0 0">
+                            This creates a system account. The domain's files will be owned by it,
+                            which is what keeps one customer out of another's.
+                        </p>
                     </div>
 
                     {% if server.available|default(false) %}
@@ -84,7 +119,6 @@
                         {{ ui.icon('plus', 15) }} Create domain
                     </button>
                 </form>
-            {% endif %}
         </div>
     </div>
 {% endblock %}

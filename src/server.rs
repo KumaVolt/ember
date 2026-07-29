@@ -609,8 +609,24 @@ async fn handle_setup(state: &AppState, request: Request) -> Result<Response> {
     }
 
     let email = (!email.trim().is_empty()).then(|| email.trim().to_string());
+    let email_for_customer = email.clone();
     if let Err(err) = store.create_admin(username, password, email, None, source) {
         return fail(err.to_string());
+    }
+
+    // The administrator is also a customer, so their own sites have somewhere
+    // to hang without inventing a second account first. Failing here is not
+    // worth blocking setup over — the customer can be added later.
+    if let Ok(conn) = store::open()
+        && store::list_customers(&conn)
+            .map(|customers| customers.iter().all(|c| c.username != username))
+            .unwrap_or(false)
+        && let Err(err) =
+            store::create_customer(&conn, username, None, email_for_customer.as_deref())
+    {
+        esw::log_line(&format!(
+            "setup: could not add {username} as a customer: {err}"
+        ));
     }
 
     esw::log_line(&format!(

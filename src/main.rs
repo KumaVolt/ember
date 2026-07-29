@@ -521,6 +521,19 @@ fn first_run_setup() -> Result<()> {
     };
     store.create_admin(&username, &stored_password, None, None, source)?;
 
+    // Also a customer, so this account's own sites have an owner without
+    // having to invent a second one.
+    if let Ok(conn) = store::open()
+        && store::list_customers(&conn)
+            .map(|customers| customers.iter().all(|c| c.username != username))
+            .unwrap_or(false)
+    {
+        match store::create_customer(&conn, &username, None, None) {
+            Ok(_) => println!("  {username} added as a customer too."),
+            Err(err) => println!("  could not add {username} as a customer: {err}"),
+        }
+    }
+
     println!("\n  administrator {username:?} is ready.");
 
     // Offer the components a hosting server actually needs, rather than

@@ -35,8 +35,15 @@ final class DomainController extends AbstractController
     #[Route('/domains/new', name: 'domain_new', methods: ['GET'])]
     public function new(): Response
     {
+        $customers = $this->api->get('/api/v1/customers')['customers'] ?? [];
+
+        // The signed-in account's own customer first, so the default choice is
+        // the one at the top rather than whichever sorts alphabetically.
+        $me = $this->getUser()?->getUserIdentifier();
+        usort($customers, static fn ($a, $b) => ($b['username'] === $me ? 1 : 0) <=> ($a['username'] === $me ? 1 : 0));
+
         return $this->render('domain/new.html.twig', [
-            'customers' => ($this->api->get('/api/v1/customers')['customers'] ?? []),
+            'customers' => $customers,
             // The database option is only offered when there is a server to
             // create one on.
             'server' => ($this->api->get('/api/v1/databases')['server'] ?? ['available' => false]),
@@ -46,9 +53,37 @@ final class DomainController extends AbstractController
     #[Route('/domains/new', name: 'domain_create', methods: ['POST'])]
     public function create(Request $request): Response
     {
+        $customerId = (string) $request->request->get('customer_id');
+
+        // "New customer" is chosen in the same form, so it is created first and
+        // the domain hangs off it. Failing here returns to the form rather than
+        // creating a domain under the wrong owner.
+        if ('__new__' === $customerId) {
+            $created = $this->api->post('/api/v1/customers', [
+                'username' => trim((string) $request->request->get('new_customer_username')),
+                'display_name' => trim((string) $request->request->get('new_customer_display_name')),
+                'email' => trim((string) $request->request->get('new_customer_email')),
+            ]);
+
+            if (null === $created || isset($created['error'])) {
+                $this->addFlash('error', sprintf(
+                    'The customer was not created, so the domain was not either: %s',
+                    htmlspecialchars($created['error'] ?? 'Ember did not respond.'),
+                ));
+
+                return $this->redirectToRoute('domain_new');
+            }
+
+            $this->addFlash('ok', sprintf(
+                'Customer <strong>%s</strong> created.',
+                htmlspecialchars($created['username']),
+            ));
+            $customerId = (string) $created['id'];
+        }
+
         $result = $this->api->post('/api/v1/domains', [
             'name' => trim((string) $request->request->get('name')),
-            'customer_id' => (int) $request->request->get('customer_id'),
+            'customer_id' => (int) $customerId,
             'webserver' => (string) $request->request->get('webserver', 'nginx'),
         ]);
 
