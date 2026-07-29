@@ -1,0 +1,80 @@
+{% extends 'base.html.twig' %}
+{% block title %}{{ brand.name }} — Websites & Domains{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Websites &amp; Domains</h1>
+            <p>Each domain gets its own directory, logs, and pool, owned by its customer.</p>
+        </div>
+    </header>
+
+    <div class="card">
+        <h2>Add a domain</h2>
+        <div class="body">
+            {% if customers is empty %}
+                <p style="margin:0;color:var(--text-muted)">
+                    Add a <a href="{{ path('customers') }}">customer</a> first — every domain
+                    belongs to one, and its files are owned by that customer's system account.
+                </p>
+            {% else %}
+                <form method="post" action="{{ path('domain_new') }}">
+                    <div class="row">
+                        <div>
+                            <label for="name">Domain name</label>
+                            <input id="name" name="name" placeholder="example.com"
+                                   autocapitalize="none" spellcheck="false" required>
+                        </div>
+                        <div>
+                            <label for="customer_id">Customer</label>
+                            <select id="customer_id" name="customer_id" required>
+                                {% for customer in customers %}
+                                    <option value="{{ customer.id }}">
+                                        {{ customer.display_name ?: customer.username }} ({{ customer.username }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="webserver">Web server</label>
+                            <select id="webserver" name="webserver">
+                                <option value="nginx">nginx</option>
+                                <option value="apache">apache</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn" type="submit">Create domain</button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Domains</h2>
+        {% if domains is empty %}
+            <div class="empty"><p>No domains yet.</p></div>
+        {% else %}
+            <table>
+                <tr>
+                    <th>Domain</th><th>Customer</th><th>Root</th>
+                    <th>Server</th><th>Status</th><th></th>
+                </tr>
+                {% for domain in domains %}
+                    <tr>
+                        <td><strong>{{ domain.name }}</strong></td>
+                        <td>{{ domain.customer_username }}</td>
+                        <td class="mono">{{ domain.root }}</td>
+                        <td><span class="badge muted">{{ domain.webserver }}</span></td>
+                        <td><span class="badge ok">{{ domain.status }}</span></td>
+                        <td style="text-align:right">
+                            <form method="post" action="{{ path('domain_delete', {id: domain.id}) }}"
+                                  onsubmit="return confirm('Remove {{ domain.name }} and delete its files?')">
+                                <button class="btn danger" type="submit">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+{% endblock %}

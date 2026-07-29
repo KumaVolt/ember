@@ -15,6 +15,8 @@ mod esw;
 mod pages;
 mod pam;
 mod server;
+mod store;
+mod vhost;
 mod worker;
 
 use anyhow::{Context, Result};

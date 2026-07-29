@@ -1,0 +1,65 @@
+{% extends 'base.html.twig' %}
+{% block title %}{{ brand.name }} — System{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>System</h1>
+            <p>What this server is running.</p>
+        </div>
+    </header>
+
+    <div class="card">
+        <h2>Service</h2>
+        <div class="body">
+            {% if status %}
+                <table>
+                    <tr><td>Status</td><td><span class="badge ok">{{ status.status }}</span></td></tr>
+                    <tr><td>Listening on</td><td class="mono">{{ status.host }}:{{ status.port }}</td></tr>
+                    <tr><td>Mode</td><td>
+                        <span class="badge {{ status.manages_this_machine ? 'warn' : 'muted' }}">{{ status.mode }}</span>
+                    </td></tr>
+                    <tr><td>Engine</td><td class="mono">{{ status.engine.name }} {{ status.engine.version }}</td></tr>
+                    <tr><td>Execution</td><td>
+                        <span class="badge {{ status.engine.mode == 'worker' ? 'ok' : 'warn' }}">{{ status.engine.mode }}</span>
+                        {% if status.engine.workers %}<span class="mono">{{ status.engine.workers }} workers</span>{% endif %}
+                    </td></tr>
+                    <tr><td>Uptime</td><td>{{ status.uptime_seconds }}s</td></tr>
+                </table>
+            {% else %}
+                <p style="margin:0;color:var(--text-muted)">Ember's control API did not respond.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Panel stack</h2>
+        <div class="body">
+            <table>
+                <tr><td>Symfony</td><td class="mono">{{ symfony_version }}</td></tr>
+                <tr><td>PHP</td><td class="mono">{{ php_version }}</td></tr>
+                <tr><td>Signed in as</td><td class="mono">{{ whoami.user ?? app.user.userIdentifier }}</td></tr>
+                <tr><td>Authenticated by</td><td>remote_user (Symfony built-in)</td></tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>System accounts</h2>
+        {% if users is empty %}
+            <div class="empty"><p>No login accounts found.</p></div>
+        {% else %}
+            <table>
+                <tr><th>User</th><th>UID</th><th>Home</th><th>Shell</th></tr>
+                {% for user in users %}
+                    <tr>
+                        <td><strong>{{ user.name }}</strong></td>
+                        <td class="mono">{{ user.uid }}</td>
+                        <td class="mono">{{ user.home }}</td>
+                        <td class="mono">{{ user.shell }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+{% endblock %}

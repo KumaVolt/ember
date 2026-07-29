@@ -23,7 +23,7 @@ use crate::{
     config::{self, Config},
     daemon::{self, State as ServiceState},
     esw::{self, EswProcess, PoolAddr},
-    pages,
+    pages, store, vhost,
     worker::WorkerPool,
 };
 
@@ -256,7 +256,7 @@ async fn route(state: AppState, request: Request) -> Result<Response> {
     // a file dropped in `public/api/` can never shadow it. Privileged
     // operations live here because PHP runs unprivileged and must ask for them.
     if decoded == "/api/v1" || decoded.starts_with("/api/v1/") {
-        return control_api(inner, &decoded, &user);
+        return control_api(inner, request, &decoded, &user).await;
     }
 
     let relative = decoded.trim_start_matches('/');
@@ -719,12 +719,32 @@ fn clear_failures(state: &AppState, username: &str) {
 /// The Symfony panel calls these endpoints for anything it cannot do itself —
 /// the PHP pool runs unprivileged by design, so system-level work is delegated
 /// here rather than handed to the web tier.
-fn control_api(inner: &Inner, path: &str, user: &str) -> Result<Response> {
-    let body = match path.trim_end_matches('/') {
+async fn control_api(inner: &Inner, request: Request, path: &str, user: &str) -> Result<Response> {
+    let method = request.method().clone();
+    let route = path.trim_end_matches('/');
+
+    // Anything that changes the machine is admin-only. Reads are open to any
+    // signed-in account so the panel can render without elevated rights.
+    if method != Method::GET && !is_admin(user) {
+        return Ok(api_error(
+            StatusCode::FORBIDDEN,
+            "this action requires an administrator",
+        ));
+    }
+
+    if let Some(response) = resource_api(inner, &method, route, request, user).await? {
+        return Ok(response);
+    }
+
+    let body = match route {
         "/api/v1" => serde_json::json!({
             "service": "ember",
             "version": env!("CARGO_PKG_VERSION"),
-            "endpoints": ["/api/v1/status", "/api/v1/whoami", "/api/v1/users"],
+            "endpoints": [
+                "/api/v1/status", "/api/v1/whoami", "/api/v1/users",
+                "/api/v1/summary", "/api/v1/customers", "/api/v1/domains",
+                "/api/v1/branding",
+            ],
         }),
         "/api/v1/status" => serde_json::json!({
             "status": "running",
@@ -780,6 +800,269 @@ fn control_api(inner: &Inner, path: &str, user: &str) -> Result<Response> {
 
 /// Send a browser to the login page rather than a bare 401 — a blank 401 reads
 /// as a broken panel.
+/// Is this account allowed to change the machine?
+fn is_admin(user: &str) -> bool {
+    if user == "root" {
+        return true;
+    }
+    accounts::Store::load()
+        .get(user)
+        .map(|account| account.is_admin)
+        .unwrap_or(false)
+}
+
+fn api_json(status: StatusCode, body: serde_json::Value) -> Response {
+    (
+        status,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        serde_json::to_vec_pretty(&body).unwrap_or_default(),
+    )
+        .into_response()
+}
+
+fn api_error(status: StatusCode, message: &str) -> Response {
+    api_json(status, serde_json::json!({ "error": message }))
+}
+
+/// Parse `/api/v1/<collection>/<id>` into its parts.
+fn path_id(route: &str, prefix: &str) -> Option<i64> {
+    route.strip_prefix(prefix)?.trim_matches('/').parse().ok()
+}
+
+async fn json_body(request: Request) -> Result<serde_json::Value> {
+    let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+        .await
+        .context("request body too large")?;
+    if bytes.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_slice(&bytes).context("request body is not valid JSON")
+}
+
+fn field<'a>(body: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+    body.get(name)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Customers and domains. Returns `Ok(None)` when the route is not one of ours,
+/// so the caller can fall through to the informational endpoints.
+async fn resource_api(
+    inner: &Inner,
+    method: &Method,
+    route: &str,
+    request: Request,
+    actor: &str,
+) -> Result<Option<Response>> {
+    let cfg = Config {
+        host: inner.host.clone(),
+        port: inner.port,
+        esw_version: inner.esw_version.clone(),
+        mode: inner.mode,
+    };
+
+    let response = match (method, route) {
+        // The panel renders its own chrome, so it needs the same branding the
+        // sign-in page uses. Readable by any signed-in account.
+        (&Method::GET, "/api/v1/branding") => {
+            let branding = config::Branding::resolve();
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "name": branding.name,
+                    "tagline": branding.tagline,
+                    "accent": branding.safe_accent(),
+                    "logo_url": branding.logo_url,
+                }),
+            )
+        }
+
+        (&Method::GET, "/api/v1/summary") => {
+            let conn = store::open()?;
+            api_json(StatusCode::OK, store::summary(&conn)?)
+        }
+
+        // --- customers -----------------------------------------------------
+        (&Method::GET, "/api/v1/customers") => {
+            let conn = store::open()?;
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({ "customers": store::list_customers(&conn)? }),
+            )
+        }
+
+        (&Method::POST, "/api/v1/customers") => {
+            let body = json_body(request).await?;
+            let Some(username) = field(&body, "username") else {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "username is required",
+                )));
+            };
+
+            // The system account comes first: if it cannot be created there is
+            // no point recording a customer that owns nothing.
+            if cfg.mode == config::Mode::Host && !auth::system_user_exists(username) {
+                if let Err(err) = auth::create_system_user(username, "/usr/sbin/nologin") {
+                    return Ok(Some(api_error(
+                        StatusCode::BAD_REQUEST,
+                        &format!("could not create the system account: {err}"),
+                    )));
+                }
+            }
+
+            let conn = store::open()?;
+            match store::create_customer(
+                &conn,
+                username,
+                field(&body, "display_name"),
+                field(&body, "email"),
+            ) {
+                Ok(customer) => {
+                    esw::log_line(&format!(
+                        "[{}] {actor} created customer {username}",
+                        daemon::now_secs()
+                    ));
+                    api_json(StatusCode::CREATED, serde_json::json!(customer))
+                }
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &err.to_string()),
+            }
+        }
+
+        (&Method::DELETE, r) if path_id(r, "/api/v1/customers").is_some() => {
+            let id = path_id(r, "/api/v1/customers").unwrap();
+            let conn = store::open()?;
+            match store::delete_customer(&conn, id) {
+                Ok(customer) => {
+                    esw::log_line(&format!(
+                        "[{}] {actor} removed customer {}",
+                        daemon::now_secs(),
+                        customer.username
+                    ));
+                    // The system account is deliberately left in place: it may
+                    // own files elsewhere, and removing accounts is not
+                    // something to do as a side effect.
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "removed": customer.username,
+                            "note": "the system account was kept; remove it manually if unused",
+                        }),
+                    )
+                }
+                Err(err) => api_error(StatusCode::BAD_REQUEST, &err.to_string()),
+            }
+        }
+
+        // --- domains -------------------------------------------------------
+        (&Method::GET, "/api/v1/domains") => {
+            let conn = store::open()?;
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({ "domains": store::list_domains(&conn, None)? }),
+            )
+        }
+
+        (&Method::POST, "/api/v1/domains") => {
+            let body = json_body(request).await?;
+            let Some(name) = field(&body, "name") else {
+                return Ok(Some(api_error(StatusCode::BAD_REQUEST, "name is required")));
+            };
+            let Some(customer_id) = body.get("customer_id").and_then(|v| v.as_i64()) else {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "customer_id is required",
+                )));
+            };
+            let webserver = field(&body, "webserver").unwrap_or("nginx");
+
+            let conn = store::open()?;
+            let domain = match store::create_domain(&conn, customer_id, name, webserver) {
+                Ok(domain) => domain,
+                Err(err) => {
+                    return Ok(Some(api_error(StatusCode::BAD_REQUEST, &err.to_string())));
+                }
+            };
+
+            // Lay out the files and write the vhost. In isolated mode this is
+            // refused, and the record is rolled back rather than left claiming
+            // a domain that has nothing behind it.
+            let owner = domain.customer_username.clone().unwrap_or_default();
+            let mut warnings = Vec::new();
+            if cfg.mode == config::Mode::Host {
+                if let Err(err) = vhost::provision(&cfg, &domain, &owner) {
+                    let _ = store::delete_domain(&conn, domain.id);
+                    return Ok(Some(api_error(
+                        StatusCode::BAD_REQUEST,
+                        &format!("could not create the hosting layout: {err}"),
+                    )));
+                }
+                match vhost::write_config(&cfg, &domain) {
+                    Ok(path) => warnings.push(format!("config written to {}", path.display())),
+                    Err(err) => warnings.push(format!("config not written: {err}")),
+                }
+                if let Ok(server) = vhost::WebServer::parse(&domain.webserver) {
+                    warnings.push(vhost::reload(server)?);
+                }
+            } else {
+                warnings.push(
+                    "isolated mode: the record was created but no files or vhost were written"
+                        .to_string(),
+                );
+            }
+
+            esw::log_line(&format!(
+                "[{}] {actor} created domain {name} for {owner}",
+                daemon::now_secs()
+            ));
+            api_json(
+                StatusCode::CREATED,
+                serde_json::json!({ "domain": domain, "notes": warnings }),
+            )
+        }
+
+        (&Method::DELETE, r) if path_id(r, "/api/v1/domains").is_some() => {
+            let id = path_id(r, "/api/v1/domains").unwrap();
+            let conn = store::open()?;
+            let domain = match store::find_domain(&conn, id)? {
+                Some(domain) => domain,
+                None => return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such domain"))),
+            };
+
+            let mut notes = Vec::new();
+            if cfg.mode == config::Mode::Host {
+                let _ = vhost::remove_config(&domain);
+                match vhost::deprovision(&cfg, &domain) {
+                    Ok(()) => notes.push(format!("removed {}", domain.root)),
+                    Err(err) => notes.push(format!("files kept: {err}")),
+                }
+                if let Ok(server) = vhost::WebServer::parse(&domain.webserver) {
+                    notes.push(vhost::reload(server)?);
+                }
+            }
+
+            store::delete_domain(&conn, id)?;
+            esw::log_line(&format!(
+                "[{}] {actor} removed domain {}",
+                daemon::now_secs(),
+                domain.name
+            ));
+            api_json(
+                StatusCode::OK,
+                serde_json::json!({ "removed": domain.name, "notes": notes }),
+            )
+        }
+
+        _ => return Ok(None),
+    };
+
+    Ok(Some(response))
+}
+
 fn unauthenticated_response() -> Response {
     redirect("/login")
 }

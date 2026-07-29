@@ -95,6 +95,88 @@ pub struct FileConfig {
     pub port: Option<u16>,
     pub esw_version: Option<String>,
     pub mode: Option<Mode>,
+    #[serde(default)]
+    pub branding: Option<Branding>,
+}
+
+/// White-label settings.
+///
+/// Kept in config rather than in templates so an operator can rebrand the panel
+/// without touching code, and so the Rust-rendered login pages and the Symfony
+/// panel cannot drift apart — both read this.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Branding {
+    /// Product name shown in the UI and page titles.
+    #[serde(default = "default_brand_name")]
+    pub name: String,
+    /// One line under the name on the sign-in screen.
+    #[serde(default = "default_tagline")]
+    pub tagline: String,
+    /// Primary accent, any CSS colour.
+    #[serde(default = "default_accent")]
+    pub accent: String,
+    /// Optional logo URL. Falls back to the wordmark when unset.
+    #[serde(default)]
+    pub logo_url: Option<String>,
+}
+
+fn default_brand_name() -> String {
+    "Ember".to_string()
+}
+fn default_tagline() -> String {
+    "Server control panel".to_string()
+}
+/// A neutral blue rather than a product colour, so a rebrand is a one-line
+/// change and the default looks deliberate rather than unbranded.
+fn default_accent() -> String {
+    "#2563eb".to_string()
+}
+
+impl Default for Branding {
+    fn default() -> Self {
+        Self {
+            name: default_brand_name(),
+            tagline: default_tagline(),
+            accent: default_accent(),
+            logo_url: None,
+        }
+    }
+}
+
+impl Branding {
+    /// Environment wins over the config file, so a container can be rebranded
+    /// without writing a config.
+    pub fn resolve() -> Self {
+        let mut branding = FileConfig::load().branding.unwrap_or_default();
+        if let Ok(name) = std::env::var("EMBER_BRAND_NAME") {
+            branding.name = name;
+        }
+        if let Ok(tagline) = std::env::var("EMBER_BRAND_TAGLINE") {
+            branding.tagline = tagline;
+        }
+        if let Ok(accent) = std::env::var("EMBER_BRAND_ACCENT") {
+            branding.accent = accent;
+        }
+        if let Ok(logo) = std::env::var("EMBER_BRAND_LOGO") {
+            branding.logo_url = Some(logo);
+        }
+        branding
+    }
+
+    /// Guard against a colour from config breaking out of the style block.
+    pub fn safe_accent(&self) -> String {
+        let accent = self.accent.trim();
+        let usable = !accent.is_empty()
+            && accent.len() <= 32
+            && accent
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"#(),.%- ".contains(&b));
+        if usable {
+            accent.to_string()
+        } else {
+            default_accent()
+        }
+    }
 }
 
 impl FileConfig {

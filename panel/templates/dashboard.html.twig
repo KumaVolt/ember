@@ -1,45 +1,71 @@
 {% extends 'base.html.twig' %}
-{% block title %}Ember — Dashboard{% endblock %}
+{% block title %}{{ brand.name }} — Dashboard{% endblock %}
 
 {% block body %}
-    <div class="card">
-        <h2>Identity</h2>
-        <dl>
-            <dt>User</dt><dd>{{ app.user.userIdentifier }}</dd>
-            <dt>Roles</dt><dd>{{ app.user.roles|join(', ') }}</dd>
-            <dt>Authenticated by</dt><dd>{{ auth_type }}</dd>
-            <dt>Firewall</dt><dd>remote_user (Symfony built-in)</dd>
-        </dl>
-    </div>
+    <header class="page">
+        <div>
+            <h1>Dashboard</h1>
+            <p>{{ brand.tagline }}</p>
+        </div>
+        <a class="btn" href="{{ path('domains') }}">Add a domain</a>
+    </header>
 
-    <div class="card">
-        <h2>Service</h2>
-        {% if status %}
-            <dl>
-                <dt>Status</dt>
-                <dd><span class="badge ok">{{ status.status }}</span></dd>
-                <dt>Mode</dt>
-                <dd>
-                    <span class="badge {{ status.manages_this_machine ? 'warn' : 'ok' }}">
+    <div class="tiles">
+        <div class="tile">
+            <div class="label">Domains</div>
+            <div class="value">{{ summary.domains }}</div>
+            <div class="sub">hosted on this server</div>
+        </div>
+        <div class="tile">
+            <div class="label">Customers</div>
+            <div class="value">{{ summary.customers }}</div>
+            <div class="sub">each a system account</div>
+        </div>
+        <div class="tile">
+            <div class="label">Service</div>
+            <div class="value" style="font-size:1.1rem">
+                {% if status %}<span class="badge ok">{{ status.status }}</span>
+                {% else %}<span class="badge warn">unknown</span>{% endif %}
+            </div>
+            <div class="sub">
+                {% if status %}up {{ (status.uptime_seconds / 60)|round(0, 'floor') }} min{% endif %}
+            </div>
+        </div>
+        <div class="tile">
+            <div class="label">Mode</div>
+            <div class="value" style="font-size:1.1rem">
+                {% if status %}
+                    <span class="badge {{ status.manages_this_machine ? 'warn' : 'muted' }}">
                         {{ status.mode }}
                     </span>
-                </dd>
-                <dt>Listening on</dt><dd>{{ status.host }}:{{ status.port }}</dd>
-                <dt>Engine</dt><dd>{{ status.engine.name }} {{ status.engine.version }}</dd>
-                <dt>Engine pool</dt><dd>{{ status.engine.pool }}</dd>
-                <dt>Uptime</dt><dd>{{ status.uptime_seconds }}s</dd>
-            </dl>
-        {% else %}
-            <p style="margin:0;color:#8b90a0">Ember's control API did not respond.</p>
-        {% endif %}
+                {% endif %}
+            </div>
+            <div class="sub">
+                {{ status and status.manages_this_machine
+                    ? 'manages this machine' : 'manages nothing outside its own directory' }}
+            </div>
+        </div>
     </div>
 
     <div class="card">
-        <h2>Stack</h2>
-        <dl>
-            <dt>Symfony</dt><dd>{{ symfony_version }}</dd>
-            <dt>PHP</dt><dd>{{ php_version }} ({{ sapi }})</dd>
-            <dt>Executed by</dt><dd>esw-engine, supervised by ember</dd>
-        </dl>
+        <h2>Recent domains</h2>
+        {% if domains is empty %}
+            <div class="empty">
+                <p>No domains yet.</p>
+                <a class="btn" href="{{ path('domains') }}">Add your first domain</a>
+            </div>
+        {% else %}
+            <table>
+                <tr><th>Domain</th><th>Customer</th><th>Document root</th><th>Server</th></tr>
+                {% for domain in domains|slice(0, 5) %}
+                    <tr>
+                        <td><strong>{{ domain.name }}</strong></td>
+                        <td>{{ domain.customer_username }}</td>
+                        <td class="mono">{{ domain.docroot }}</td>
+                        <td><span class="badge muted">{{ domain.webserver }}</span></td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
     </div>
 {% endblock %}

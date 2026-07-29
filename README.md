@@ -357,6 +357,64 @@ Being resident brings obligations that FPM handled for free:
 
 Pool size is `EMBER_WORKERS`, defaulting to 2–4 by core count.
 
+## Theming and white-labelling
+
+The panel ships a light theme with a blue accent, built on design tokens rather
+than colour literals — every colour resolves through a CSS custom property, so a
+theme is an override of one block.
+
+Branding is configuration, not a template edit, and both tiers read the same
+source: the Rust-rendered sign-in page and the Symfony panel stay in step.
+
+```console
+$ EMBER_BRAND_NAME="Nimbus Hosting" \
+  EMBER_BRAND_ACCENT="#7c3aed" \
+  EMBER_BRAND_TAGLINE="Managed hosting control" ember start
+```
+
+Or in `$EMBER_HOME/config.json`:
+
+```json
+{ "branding": { "name": "Nimbus Hosting", "accent": "#7c3aed", "logo_url": "/logo.svg" } }
+```
+
+The accent is validated before it reaches the stylesheet, so a value from config
+cannot break out of the style block.
+
+## Customers and domains
+
+A customer **is** a system account. A domain belongs to a customer, and its
+files are owned by that customer's user and group — which is the isolation
+boundary, not a convention.
+
+```text
+/var/www/vhosts/<domain>/
+  httpdocs/     the site itself — the only thing served
+  logs/         access.log and error.log for this domain alone
+  conf/         the generated vhost config
+  tmp/          per-domain scratch, off the shared /tmp
+```
+
+Creating a domain writes that tree, chowns it to the customer, generates an
+nginx or apache vhost pointing PHP at a pool that runs as that customer, and
+reloads the web server. In isolated mode none of it is written and the API says
+so rather than pretending.
+
+**Ember serves the panel itself and never delegates that to nginx.** These
+vhosts are for customer domains only.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET/POST /api/v1/customers` | List and create; creating also makes the system account |
+| `DELETE /api/v1/customers/{id}` | Refuses while domains still reference it |
+| `GET/POST /api/v1/domains` | List and create; creating provisions files and vhost |
+| `DELETE /api/v1/domains/{id}` | Removes the vhost and the directory tree |
+| `GET /api/v1/summary` | Counts for the dashboard |
+| `GET /api/v1/branding` | White-label settings |
+
+Mutations require an administrator. Reads work for any signed-in account, so the
+panel renders without elevated rights.
+
 ## The panel
 
 `panel/` in this repository is a Symfony 8.1 application. Its source is version

@@ -1,0 +1,60 @@
+{% extends 'base.html.twig' %}
+{% block title %}{{ brand.name }} — Customers{% endblock %}
+
+{% block body %}
+    <header class="page">
+        <div>
+            <h1>Customers</h1>
+            <p>Every customer is a system account. Their files and processes run as that user.</p>
+        </div>
+    </header>
+
+    <div class="card">
+        <h2>Add a customer</h2>
+        <div class="body">
+            <form method="post" action="{{ path('customer_new') }}">
+                <div class="row">
+                    <div>
+                        <label for="username">Username</label>
+                        <input id="username" name="username" placeholder="acme"
+                               autocapitalize="none" spellcheck="false" required>
+                    </div>
+                    <div>
+                        <label for="display_name">Display name</label>
+                        <input id="display_name" name="display_name" placeholder="Acme Ltd">
+                    </div>
+                    <div>
+                        <label for="email">Email</label>
+                        <input id="email" name="email" type="email" placeholder="ops@acme.com">
+                    </div>
+                </div>
+                <button class="btn" type="submit">Create customer</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Customers</h2>
+        {% if customers is empty %}
+            <div class="empty"><p>No customers yet.</p></div>
+        {% else %}
+            <table>
+                <tr><th>Customer</th><th>System account</th><th>Email</th><th>Domains</th><th></th></tr>
+                {% for customer in customers %}
+                    <tr>
+                        <td><strong>{{ customer.display_name ?: customer.username }}</strong></td>
+                        <td class="mono">{{ customer.username }}</td>
+                        <td>{{ customer.email ?: '—' }}</td>
+                        <td>{{ customer.domain_count }}</td>
+                        <td style="text-align:right">
+                            <form method="post" action="{{ path('customer_delete', {id: customer.id}) }}"
+                                  onsubmit="return confirm('Remove {{ customer.username }}?')">
+                                <button class="btn danger" type="submit">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% endif %}
+    </div>
+{% endblock %}
