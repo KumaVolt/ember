@@ -955,3 +955,79 @@ pub fn reload(server: WebServer) -> Result<String> {
         Err(err) => Ok(format!("could not run systemctl: {err}")),
     }
 }
+
+/// Start the web server if it is installed but not accepting connections.
+///
+/// The same reasoning as the database: on a normal server systemd owns this and
+/// the call does nothing, but in a container ember is PID 1 and nothing else
+/// would bring nginx up — leaving customer sites unserved on a box that has
+/// everything installed.
+pub fn ensure_running(cfg: &Config) -> String {
+    if cfg.mode != crate::config::Mode::Host {
+        return "isolated mode: not starting a web server".to_string();
+    }
+
+    for server in [WebServer::Nginx, WebServer::Apache] {
+        let Some(binary) = server.binary() else {
+            continue;
+        };
+
+        if is_listening(&server) {
+            return format!("{} is running", server.as_str());
+        }
+
+        let started = if std::path::Path::new("/run/systemd/system").is_dir() {
+            std::process::Command::new("systemctl")
+                .args(["start", server.as_str()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        } else {
+            // No init: start it directly. nginx and apache both daemonise.
+            let mut command = std::process::Command::new(&binary);
+            if server == WebServer::Apache {
+                command.arg("-k").arg("start");
+            }
+            command
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+
+        if started {
+            return format!("{} started", server.as_str());
+        }
+        return format!("{} is installed but would not start", server.as_str());
+    }
+
+    "no web server installed".to_string()
+}
+
+impl WebServer {
+    fn binary(self) -> Option<PathBuf> {
+        let candidates: &[&str] = match self {
+            Self::Nginx => &["/usr/sbin/nginx"],
+            Self::Apache => &["/usr/sbin/apache2", "/usr/sbin/httpd"],
+        };
+        candidates
+            .iter()
+            .map(PathBuf::from)
+            .find(|path| path.is_file())
+    }
+}
+
+/// Is a web server process actually up?
+fn is_listening(server: &WebServer) -> bool {
+    let name = match server {
+        WebServer::Nginx => "nginx",
+        WebServer::Apache => "apache2",
+    };
+    std::process::Command::new("pgrep")
+        .args(["-x", name])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}

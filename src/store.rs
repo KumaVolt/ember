@@ -142,6 +142,16 @@ fn migrate(conn: &Connection) -> Result<()> {
             .context("could not add php_settings to domains")?;
     }
 
+    // Database passwords are stored encrypted rather than hashed: their job is
+    // to be shown again when a customer forgets one.
+    let has_password = conn
+        .prepare("SELECT 1 FROM pragma_table_info('databases') WHERE name = 'password_enc'")?
+        .exists([])?;
+    if !has_password {
+        conn.execute_batch("ALTER TABLE databases ADD COLUMN password_enc TEXT;")
+            .context("could not add password_enc to databases")?;
+    }
+
     let has_hosting = conn
         .prepare("SELECT 1 FROM pragma_table_info('domains') WHERE name = 'hosting_settings'")?
         .exists([])?;
@@ -422,6 +432,10 @@ pub struct Database {
     /// Filled in when listing, so the UI need not query the server itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    /// Whether a password is stored and can be shown. Never the value itself —
+    /// that is only ever returned by the endpoint that asks for it explicitly.
+    #[serde(default)]
+    pub password_stored: bool,
 }
 
 fn row_to_database(row: &rusqlite::Row<'_>) -> rusqlite::Result<Database> {
@@ -436,6 +450,9 @@ fn row_to_database(row: &rusqlite::Row<'_>) -> rusqlite::Result<Database> {
         domain_name: row.get(7)?,
         customer_username: row.get(8)?,
         size_bytes: None,
+        password_stored: row
+            .get::<_, Option<String>>(9)?
+            .is_some_and(|value| !value.is_empty()),
     })
 }
 
@@ -447,7 +464,7 @@ pub fn list_databases(
 ) -> Result<Vec<Database>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at,
-                d.domain_id, dom.name, c.username
+                d.domain_id, dom.name, c.username, d.password_enc
            FROM databases d
            JOIN customers c ON c.id = d.customer_id
            LEFT JOIN domains dom ON dom.id = d.domain_id
@@ -462,7 +479,7 @@ pub fn list_databases(
 pub fn find_database(conn: &Connection, id: i64) -> Result<Option<Database>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.customer_id, d.engine, d.name, d.db_user, d.created_at,
-                d.domain_id, dom.name, c.username
+                d.domain_id, dom.name, c.username, d.password_enc
            FROM databases d
            JOIN customers c ON c.id = d.customer_id
            LEFT JOIN domains dom ON dom.id = d.domain_id
@@ -538,4 +555,26 @@ pub fn update_hosting(
         params![id, settings_json, docroot],
     )?;
     find_domain(conn, id)?.context("no such domain")
+}
+
+/// Store the encrypted password for a database user.
+pub fn set_database_password(conn: &Connection, id: i64, sealed: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE databases SET password_enc = ?2 WHERE id = ?1",
+        params![id, sealed],
+    )?;
+    Ok(())
+}
+
+/// The stored ciphertext, if there is one.
+pub fn database_password(conn: &Connection, id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT password_enc FROM databases WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .filter(|value| !value.is_empty()))
 }

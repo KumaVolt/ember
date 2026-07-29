@@ -24,7 +24,7 @@ use crate::{
     daemon::{self, State as ServiceState},
     database,
     esw::{self, EswProcess, PoolAddr},
-    files, pages, php, services, store, system, vhost,
+    files, pages, php, secrets, services, store, system, vhost,
     worker::WorkerPool,
 };
 
@@ -147,6 +147,9 @@ pub async fn run(cfg: Config) -> Result<()> {
             for message in php::reload_all(&cfg) {
                 esw::log_line(&format!("[{}] php: {message}", daemon::now_secs()));
             }
+
+            let web = vhost::ensure_running(&cfg);
+            esw::log_line(&format!("[{}] web server: {web}", daemon::now_secs()));
         });
     }
 
@@ -1441,6 +1444,16 @@ async fn resource_api(
                 }
             };
 
+            // Stored encrypted so it can be shown again. Failing to store is
+            // not a reason to fail the creation — the database exists and the
+            // password was just displayed.
+            match secrets::seal(&password) {
+                Ok(sealed) => {
+                    let _ = store::set_database_password(&conn, record.id, &sealed);
+                }
+                Err(err) => esw::log_line(&format!("could not store the password: {err:#}")),
+            }
+
             esw::log_line(&format!(
                 "[{}] {actor} created database {name} for {}",
                 daemon::now_secs(),
@@ -1480,11 +1493,69 @@ async fn resource_api(
             };
 
             match database::set_password(&cfg, engine, &record.db_user, &password) {
-                Ok(()) => api_json(
-                    StatusCode::OK,
-                    serde_json::json!({ "user": record.db_user, "password": password }),
-                ),
+                Ok(()) => {
+                    if let Ok(sealed) = secrets::seal(&password) {
+                        let _ = store::set_database_password(&conn, record.id, &sealed);
+                    }
+                    esw::log_line(&format!(
+                        "[{}] {actor} reset the password for {}",
+                        daemon::now_secs(),
+                        record.db_user
+                    ));
+                    api_json(
+                        StatusCode::OK,
+                        serde_json::json!({ "user": record.db_user, "password": password }),
+                    )
+                }
                 Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            }
+        }
+
+        // Show a stored password.
+        //
+        // Admin-only and logged: reading out a credential is an event worth a
+        // trail, even though the account doing it could reset the password
+        // anyway.
+        (&Method::GET, r) if r.starts_with("/api/v1/databases/") && r.ends_with("/reveal") => {
+            let id: i64 = r
+                .trim_start_matches("/api/v1/databases/")
+                .trim_end_matches("/reveal")
+                .trim_matches('/')
+                .parse()
+                .unwrap_or(-1);
+
+            if !is_admin(actor) {
+                return Ok(Some(api_error(
+                    StatusCode::FORBIDDEN,
+                    "only an administrator can read a stored password",
+                )));
+            }
+
+            let conn = store::open()?;
+            let Some(record) = store::find_database(&conn, id)? else {
+                return Ok(Some(api_error(StatusCode::NOT_FOUND, "no such database")));
+            };
+
+            match store::database_password(&conn, id)? {
+                Some(sealed) => match secrets::open(&sealed) {
+                    Ok(password) => {
+                        esw::log_line(&format!(
+                            "[{}] {actor} viewed the password for {}",
+                            daemon::now_secs(),
+                            record.db_user
+                        ));
+                        api_json(
+                            StatusCode::OK,
+                            serde_json::json!({ "user": record.db_user, "password": password }),
+                        )
+                    }
+                    Err(err) => api_error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+                },
+                None => api_error(
+                    StatusCode::NOT_FOUND,
+                    "no password is stored for this database — it predates storage, or \
+                     storing it failed. Reset it to store one.",
+                ),
             }
         }
 

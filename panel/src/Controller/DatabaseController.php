@@ -155,6 +155,27 @@ final class DatabaseController extends AbstractController
         return $this->redirectToRoute('databases');
     }
 
+    #[Route('/databases/{id}/reveal', name: 'database_reveal', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function reveal(int $id, Request $request): Response
+    {
+        $result = $this->api->get('/api/v1/databases/'.$id.'/reveal');
+
+        if (null === $result || isset($result['error'])) {
+            $this->addFlash('error', $result['error'] ?? 'Ember did not respond.');
+        } else {
+            $this->addFlash('ok', sprintf(
+                'Password for <code>%s</code>: <code>%s</code>',
+                htmlspecialchars($result['user']),
+                htmlspecialchars($result['password']),
+            ));
+        }
+
+        // Back where the button was pressed, which may be a domain page.
+        $back = (string) $request->request->get('back', '');
+
+        return $this->redirect('' !== $back && str_starts_with($back, '/') ? $back : $this->generateUrl('databases'));
+    }
+
     #[Route('/databases/{id}/delete', name: 'database_delete_confirm', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function confirmDelete(int $id): Response
     {

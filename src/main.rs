@@ -18,6 +18,7 @@ mod files;
 mod pages;
 mod pam;
 mod php;
+mod secrets;
 mod server;
 mod services;
 mod store;

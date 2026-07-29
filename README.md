@@ -88,6 +88,13 @@ resolves its Composer dependencies, generates a unique `APP_SECRET`, installs a
 systemd unit with `EMBER_MODE=host`, starts it, and prints the URL to open.
 Visit that URL — the first page is setup.
 
+**nginx, MariaDB and certbot are installed by default**, so a fresh server can
+host a site, give it a database and get it a certificate without installing
+anything by hand. nginx's catch-all default site is removed, since it would
+otherwise answer for every domain reaching the machine. Ember starts the web
+server and the database itself when they are installed but idle — on a systemd
+box that is a no-op, but in a container nothing else would.
+
 **The server needs no PHP and no Composer of its own.** `install.sh` runs
 Composer through `ember esw php`, the command-line half of the same pinned build
 that serves the panel — so what compiles the panel is exactly what runs it.
@@ -620,9 +627,19 @@ ones in place, needing only a name — the owner follows from the domain. Removi
 a domain leaves its databases with the customer rather than quietly destroying
 data they still own.
 
-Passwords are generated, shown **once**, and never stored — there is no way to
-display one again, only to reset it. Dropping a database destroys data with no
-undo, so it requires typing the database name, enforced in the API.
+Passwords are generated, shown at creation, and **stored encrypted** so they can
+be shown again — a customer who forgets one should not have to reconfigure their
+application. Reading one back is admin-only and logged.
+
+They are encrypted rather than hashed, with ChaCha20-Poly1305 under a key
+derived from Ember's own signing key. That protects the stored file on its own —
+a stray backup, a database copied off the box — which is the realistic leak. It
+does **not** protect against someone who already has root, but Ember runs as root
+and can reset any password anyway, so that attacker had already won. The
+practical consequence: back up `$EMBER_HOME` as carefully as the machine itself.
+
+Dropping a database destroys data with no undo, so it requires typing the
+database name, enforced in the API.
 
 Ember drives the `mysql` client rather than linking a driver, for the same
 reason it drives certbot. Statements go in over **stdin**, never as arguments,

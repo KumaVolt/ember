@@ -84,7 +84,15 @@
                                         <button class="btn ghost sm" type="submit">Install</button>
                                     </form>
                                 {% else %}
-                                    <span class="badge muted">unavailable here</span>
+                                    <span class="badge muted" title="{{ service.unavailable_reason|default('') }}">
+                                        unavailable here
+                                    </span>
+                                    {% if service.unavailable_reason is defined %}
+                                        <div style="color:var(--text-muted);font-size:.76rem;
+                                                    max-width:16rem;margin-top:.2rem;white-space:normal">
+                                            {{ service.unavailable_reason }}
+                                        </div>
+                                    {% endif %}
                                 {% endif %}
                             {% endif %}
                         </td>

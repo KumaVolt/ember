@@ -67,6 +67,11 @@ fn from_hex(text: &str) -> Option<Vec<u8>> {
 ///
 /// Cached after the first read: every authenticated request verifies a cookie,
 /// and re-reading the key from disk each time would be a syscall per request.
+/// The signing key, for callers that derive their own key from it.
+pub fn secret_key_bytes() -> Result<Vec<u8>> {
+    secret_key()
+}
+
 fn secret_key() -> Result<Vec<u8>> {
     static CACHED: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     if let Some(key) = CACHED.get() {

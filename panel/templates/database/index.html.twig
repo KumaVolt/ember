@@ -62,6 +62,13 @@
                                    : (database.size_bytes // 1024) ~ ' KB') : '—' }}
                         </td>
                         <td style="text-align:right;white-space:nowrap">
+                            {% if database.password_stored|default(false) %}
+                                <form method="post" style="display:inline"
+                                      action="{{ path('database_reveal', {id: database.id}) }}">
+                                    <input type="hidden" name="back" value="{{ path('databases') }}">
+                                    <button class="btn ghost sm" type="submit">Show password</button>
+                                </form>
+                            {% endif %}
                             <form method="post" style="display:inline"
                                   action="{{ path('database_password', {id: database.id}) }}"
                                   onsubmit="return confirm('Reset the password for {{ database.db_user }}? Anything using the old one stops connecting.')">

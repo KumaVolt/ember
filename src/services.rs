@@ -27,8 +27,11 @@ pub struct Service {
     pub running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// False when Ember has no packages for this platform.
+    /// False when Ember has no way to install this here.
     pub installable: bool,
+    /// Why not, when it cannot. "Unavailable" on its own explains nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     /// Set when the component needs something said out loud before installing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -231,6 +234,20 @@ pub fn list() -> Vec<Service> {
                     None
                 },
                 installable: !packages.is_empty(),
+                unavailable_reason: if packages.is_empty() {
+                    Some(match manager {
+                        None => format!(
+                            "no supported package manager on this machine ({}), so ember \
+                             cannot install anything here — this works on a Linux server",
+                            std::env::consts::OS
+                        ),
+                        Some(manager) => {
+                            format!("ember has no {manager} package for {}", definition.name)
+                        }
+                    })
+                } else {
+                    None
+                },
                 note: definition.note.map(str::to_string),
             }
         })

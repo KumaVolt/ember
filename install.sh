@@ -297,6 +297,57 @@ if id ember-esw >/dev/null 2>&1; then
 fi
 chmod -R u+rwX,g+rwX "$PANEL_DIR/var" 2>/dev/null || true
 
+# --- web server -------------------------------------------------------------
+
+step "Setting up the web server"
+
+# nginx serves customer domains. Ember serves the panel itself and does not use
+# nginx for it, so installing this does not affect how you reach the panel.
+if command -v nginx >/dev/null 2>&1; then
+  say "nginx is already installed"
+else
+  case "$PKG" in
+    apt)
+      if apt-get install -y -qq --no-install-recommends nginx >/dev/null 2>&1; then
+        say "installed nginx"
+      else
+        say "could not install nginx; customer sites will not be served"
+      fi
+      ;;
+    dnf|yum)
+      if $PKG install -y -q nginx >/dev/null 2>&1; then
+        say "installed nginx"
+      else
+        say "could not install nginx; customer sites will not be served"
+      fi
+      ;;
+    *)
+      say "unknown package manager; install nginx yourself to serve customer sites"
+      ;;
+  esac
+fi
+
+if command -v nginx >/dev/null 2>&1; then
+  # Debian ships a default site on port 80 that would answer for every domain
+  # that reaches this machine, including ones ember is configured to serve.
+  if [ -e /etc/nginx/sites-enabled/default ]; then
+    rm -f /etc/nginx/sites-enabled/default
+    say "removed nginx's catch-all default site"
+  fi
+
+  # Generated vhosts are symlinked here, so it has to exist before the first
+  # domain is created.
+  mkdir -p /etc/nginx/sites-enabled
+
+  if [ -z "$EMBER_SKIP_SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl enable --now nginx >/dev/null 2>&1; then
+      say "nginx is running"
+    else
+      say "could not start nginx; check: systemctl status nginx"
+    fi
+  fi
+fi
+
 # --- database server --------------------------------------------------------
 
 step "Setting up the database server"
