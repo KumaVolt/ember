@@ -29,6 +29,11 @@ EMBER_ESW_DIR="${EMBER_ESW_DIR:-/opt/ember/esw}"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/ember}"
 SERVICE_NAME=ember
 
+# Exported, not merely set: every nested `ember` call below — esw install,
+# esw php, status — resolves its own paths from the environment. Without this
+# they fall back to root's ~/.ember and cannot find what we just installed.
+export EMBER_HOME EMBER_ESW_DIR
+
 say()  { printf '  %s\n' "$*"; }
 step() { printf '\n\033[1m==>\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -166,8 +171,7 @@ fi
 step "Installing esw-engine"
 
 mkdir -p "$EMBER_HOME" "$EMBER_ESW_DIR"
-EMBER_HOME="$EMBER_HOME" EMBER_ESW_DIR="$EMBER_ESW_DIR" "$INSTALL_PATH" esw install \
-  || die "could not install esw-engine"
+"$INSTALL_PATH" esw install || die "could not install esw-engine"
 
 # An unprivileged account to execute panel code, so a panel bug is not root.
 if ! id ember-esw >/dev/null 2>&1; then
@@ -341,7 +345,7 @@ EOF
     sleep 1
   done
 
-  if ! EMBER_HOME="$EMBER_HOME" "$INSTALL_PATH" status 2>/dev/null | grep -q running; then
+  if ! "$INSTALL_PATH" status 2>/dev/null | grep -q running; then
     printf '\n'
     say "the service did not come up. Recent log:"
     journalctl -u $SERVICE_NAME -n 20 --no-pager 2>/dev/null || true
