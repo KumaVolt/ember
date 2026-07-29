@@ -906,13 +906,14 @@ async fn resource_api(
 
             // The system account comes first: if it cannot be created there is
             // no point recording a customer that owns nothing.
-            if cfg.mode == config::Mode::Host && !auth::system_user_exists(username) {
-                if let Err(err) = auth::create_system_user(username, "/usr/sbin/nologin") {
-                    return Ok(Some(api_error(
-                        StatusCode::BAD_REQUEST,
-                        &format!("could not create the system account: {err}"),
-                    )));
-                }
+            if cfg.mode == config::Mode::Host
+                && !auth::system_user_exists(username)
+                && let Err(err) = auth::create_system_user(username, "/usr/sbin/nologin")
+            {
+                return Ok(Some(api_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("could not create the system account: {err}"),
+                )));
             }
 
             let conn = store::open()?;
